@@ -1,0 +1,44 @@
+# Built artifacts
+.gradle/
+build/
+app/build/
+captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# Local SDK path — never commit
+local.properties
+
+# IDE
+.idea/
+*.iml
+.navigation/
+.externalNativeBuild/
+.cxx/
+*.hprof
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Signing
+*.jks
+*.keystore
+keystore.properties
+
+# Secrets
+.env
+.env.*
+google-services.json
+
+# Test / lint
+lint/intermediates/
+lint/generated/
+lint/outputs/
+lint/tmp/
+
+# Kotlin
+.kotlin/
