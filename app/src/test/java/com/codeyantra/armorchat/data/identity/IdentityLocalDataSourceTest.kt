@@ -10,6 +10,8 @@ import com.codeyantra.armorchat.domain.identity.Base64Url
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
 
@@ -30,6 +32,22 @@ class IdentityLocalDataSourceTest {
         assertThat(second.publicIdentityKey).isEqualTo(first.publicIdentityKey)
         assertThat(keys.createCount).isEqualTo(1)
         assertThat(first.armorChatId).isEqualTo(ArmorChatId.derive(publicKey))
+    }
+
+    @Test
+    fun concurrentCreate_callsGenerateOnlyOneIdentity() = runTest {
+        val keys = FakeSecureIdentityKeyStore(publicKey)
+        val dao = FakeIdentityDao()
+        val ds = IdentityLocalDataSource(dao, keys, FixedClock(1000L))
+
+        val identities = listOf(
+            async { ds.createIdentity() },
+            async { ds.createIdentity() },
+            async { ds.createIdentity() },
+        ).awaitAll()
+
+        assertThat(identities.map { it.armorChatId }.toSet()).hasSize(1)
+        assertThat(keys.createCount).isEqualTo(1)
     }
 
     @Test
@@ -78,6 +96,23 @@ class IdentityLocalDataSourceTest {
         }
         assertThat(keys.createCount).isEqualTo(0)
     }
+
+    @Test
+    fun create_doesNotRebuildWhenKeyMaterialHasNoMetadata() = runTest {
+        val keys = FakeSecureIdentityKeyStore(publicKey).also { it.markExisting() }
+        val dao = FakeIdentityDao()
+        val ds = IdentityLocalDataSource(dao, keys, FixedClock(3L))
+
+        try {
+            ds.createIdentity()
+            throw AssertionError("expected IdentityStorageException")
+        } catch (e: IdentityStorageException.InconsistentState) {
+            assertThat(e.message).contains("metadata")
+        }
+        assertThat(keys.createCount).isEqualTo(0)
+        assertThat(dao.get()).isNull()
+    }
+
 }
 
 private class FixedClock(private val now: Long) : AppClock {
@@ -129,4 +164,5 @@ private class FakeSecureIdentityKeyStore(
         }
         return publicKey.copyOf()
     }
+
 }

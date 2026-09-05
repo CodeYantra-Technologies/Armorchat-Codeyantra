@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.system.measureTimeMillis
 
 /**
  * Bridges Room public metadata and [SecureIdentityKeyStore] private key material.
@@ -38,9 +39,14 @@ class IdentityLocalDataSource @Inject constructor(
     suspend fun createIdentity(): UserIdentity = createMutex.withLock {
         val existingMeta = identityDao.get()
         val hasKeys = secureIdentityKeyStore.hasKeyMaterial()
+        IdentityDiagnostics.stage("load-existing", "metadata=${existingMeta != null}, keys=$hasKeys")
 
         if (existingMeta != null && hasKeys) {
-            val publicKey = secureIdentityKeyStore.loadPublicKeyBytes()
+            lateinit var publicKey: ByteArray
+            val elapsed = measureTimeMillis {
+                publicKey = secureIdentityKeyStore.loadPublicKeyBytes()
+            }
+            IdentityDiagnostics.stage("load-existing-keys", "success=true, elapsedMs=$elapsed")
             val encoded = Base64Url.encode(publicKey)
             if (encoded != existingMeta.publicIdentityKey) {
                 throw IdentityStorageException.InconsistentState(
@@ -57,33 +63,35 @@ class IdentityLocalDataSource @Inject constructor(
         }
 
         if (existingMeta != null && !hasKeys) {
+            IdentityDiagnostics.stage("load-existing", "success=false, category=missing-key-material")
             throw IdentityStorageException.Corrupted(
                 "Identity metadata exists but encrypted key material is missing.",
             )
         }
 
         if (existingMeta == null && hasKeys) {
-            // Keys without metadata: try to rebuild metadata from keys (do not regenerate).
-            val publicKey = secureIdentityKeyStore.loadPublicKeyBytes()
-            val identity = UserIdentity(
-                armorChatId = ArmorChatId.derive(publicKey),
-                publicIdentityKey = Base64Url.encode(publicKey),
-                createdAtEpochMs = clock.nowEpochMs(),
-                version = 1,
+            IdentityDiagnostics.stage("load-existing", "success=false, category=metadata-missing")
+            throw IdentityStorageException.InconsistentState(
+                "Encrypted identity key material exists but Room metadata is missing.",
             )
-            identityDao.upsert(identity.toEntity())
-            return identity
         }
 
         // Fresh create
-        val publicKey = secureIdentityKeyStore.createAndStore()
+        lateinit var publicKey: ByteArray
+        val keyElapsed = measureTimeMillis {
+            publicKey = secureIdentityKeyStore.createAndStore()
+        }
+        IdentityDiagnostics.stage("secure-key-write", "success=true, elapsedMs=$keyElapsed, existed=false")
         val identity = UserIdentity(
             armorChatId = ArmorChatId.derive(publicKey),
             publicIdentityKey = Base64Url.encode(publicKey),
             createdAtEpochMs = clock.nowEpochMs(),
             version = 1,
         )
-        identityDao.upsert(identity.toEntity())
+        val roomElapsed = measureTimeMillis {
+            identityDao.upsert(identity.toEntity())
+        }
+        IdentityDiagnostics.stage("room-write", "success=true, elapsedMs=$roomElapsed, existed=false")
         return identity
     }
 
@@ -100,7 +108,14 @@ class IdentityLocalDataSource @Inject constructor(
                 "Identity metadata does not match decryptable key material.",
             )
         }
+
         return meta.toDomain()
+    }
+
+    private object IdentityDiagnostics {
+        fun stage(stage: String, details: String) {
+            println("ArmorChatIdentity stage=$stage $details")
+        }
     }
 
     private fun IdentityEntity.toDomain() = UserIdentity(

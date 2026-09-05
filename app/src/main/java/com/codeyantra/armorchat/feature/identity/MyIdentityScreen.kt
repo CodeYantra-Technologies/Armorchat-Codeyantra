@@ -26,6 +26,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,6 +40,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.codeyantra.armorchat.R
 import com.codeyantra.armorchat.domain.identity.IdentityQrPayload
 import com.codeyantra.armorchat.ui.qr.QrBitmapEncoder
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun MyIdentityRoute(
@@ -77,8 +80,10 @@ fun MyIdentityScreen(
             null
         }
     }
-    val qrBitmap = remember(qrContent) {
-        qrContent?.let { QrBitmapEncoder.encode(it, sizePx = 640) }
+    val qrBitmap by produceState<android.graphics.Bitmap?>(initialValue = null, qrContent) {
+        value = qrContent?.let { content ->
+            withContext(Dispatchers.Default) { QrBitmapEncoder.encode(content, sizePx = 640) }
+        }
     }
 
     Scaffold(
@@ -106,7 +111,7 @@ fun MyIdentityScreen(
                 .padding(horizontal = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            if (armorChatId == null || qrBitmap == null) {
+            if (armorChatId == null) {
                 Spacer(Modifier.height(40.dp))
                 Text(
                     text = stringResource(R.string.identity_missing),
@@ -130,11 +135,14 @@ fun MyIdentityScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(24.dp))
-                Image(
-                    bitmap = qrBitmap.asImageBitmap(),
-                    contentDescription = stringResource(R.string.cd_identity_qr),
-                    modifier = Modifier.size(240.dp),
-                )
+                val bitmap = qrBitmap
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = stringResource(R.string.cd_identity_qr),
+                        modifier = Modifier.size(240.dp),
+                    )
+                }
                 Spacer(Modifier.height(20.dp))
                 OutlinedButton(
                     onClick = {

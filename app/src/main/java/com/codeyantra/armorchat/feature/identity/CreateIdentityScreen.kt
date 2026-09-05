@@ -35,10 +35,15 @@ fun CreateIdentityRoute(
     onCreated: (UserIdentity) -> Unit,
     viewModel: IdentityViewModel = hiltViewModel(),
 ) {
-    val busy by viewModel.busy.collectAsStateWithLifecycle()
-    val error by viewModel.error.collectAsStateWithLifecycle()
+    val creationState by viewModel.creationState.collectAsStateWithLifecycle()
+    val busy = creationState is IdentityCreationState.Creating
+    val canCreate = creationState is IdentityCreationState.Idle ||
+        creationState is IdentityCreationState.RecoverableError
+    val error = (creationState as? IdentityCreationState.RecoverableError)?.message
+        ?: (creationState as? IdentityCreationState.FatalStorageError)?.message
     CreateIdentityScreen(
         busy = busy,
+        canCreate = canCreate,
         error = error,
         onBack = onBack,
         onContinue = { viewModel.create(onCreated) },
@@ -49,6 +54,7 @@ fun CreateIdentityRoute(
 @Composable
 fun CreateIdentityScreen(
     busy: Boolean,
+    canCreate: Boolean = !busy,
     error: String?,
     onBack: () -> Unit,
     onContinue: () -> Unit,
@@ -89,7 +95,7 @@ fun CreateIdentityScreen(
             Spacer(Modifier.weight(1f))
             Button(
                 onClick = onContinue,
-                enabled = !busy,
+                enabled = canCreate,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp),

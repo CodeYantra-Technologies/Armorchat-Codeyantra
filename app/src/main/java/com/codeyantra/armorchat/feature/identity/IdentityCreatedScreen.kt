@@ -22,6 +22,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -34,6 +36,8 @@ import com.codeyantra.armorchat.R
 import com.codeyantra.armorchat.domain.identity.IdentityQrPayload
 import com.codeyantra.armorchat.domain.model.UserIdentity
 import com.codeyantra.armorchat.ui.qr.QrBitmapEncoder
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun IdentityCreatedScreen(
@@ -51,7 +55,9 @@ fun IdentityCreatedScreen(
             ),
         )
     }
-    val qrBitmap = remember(qrContent) { QrBitmapEncoder.encode(qrContent, sizePx = 640) }
+    val qrBitmap by produceState<android.graphics.Bitmap?>(initialValue = null, qrContent) {
+        value = withContext(Dispatchers.Default) { QrBitmapEncoder.encode(qrContent, sizePx = 640) }
+    }
 
     Scaffold(containerColor = colors.background) { padding ->
         Column(
@@ -91,11 +97,14 @@ fun IdentityCreatedScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(24.dp))
-            Image(
-                bitmap = qrBitmap.asImageBitmap(),
-                contentDescription = stringResource(R.string.cd_identity_qr),
-                modifier = Modifier.size(220.dp),
-            )
+            val bitmap = qrBitmap
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = stringResource(R.string.cd_identity_qr),
+                    modifier = Modifier.size(220.dp),
+                )
+            }
             Spacer(Modifier.height(20.dp))
             OutlinedButton(
                 onClick = {
