@@ -5,7 +5,8 @@ Veltrix is the backend trust/security layer. Veltrix is not a surveillance layer
 
 ## Current status
 
-This repository is **Phase 1A — Secure Local Identity Foundation**.
+This repository includes **Phase 1C — Local Contact Exchange**, on the completed
+Phase 1A identity and Phase 1B encrypted backup foundation.
 
 Implemented in this phase:
 
@@ -19,7 +20,6 @@ The following are **not implemented** and must not be claimed as working:
 - End-to-end encryption of messages
 - Double Ratchet / session (X25519) keys
 - Message relay / transport
-- Secure backup / recovery of identity
 - Calls, attachments, mesh, or private routing
 
 ## Security goals (this and future phases)
@@ -43,6 +43,19 @@ The following are **not implemented** and must not be claimed as working:
 - The Room schema stores public identity metadata only (no private keys, no message plaintext).
 
 See [docs/IDENTITY_SECURITY.md](docs/IDENTITY_SECURITY.md) for the full identity specification.
+
+## Local contact exchange trust boundary
+
+Untrusted QR input is size-bounded, strictly parsed, and bound to a valid Ed25519
+public key by recomputing `ac1`. Contacts store public material only; a UNIQUE ID
+index and insert-without-replacement behavior preserve the pinned key. Scanning
+uses on-device CameraX/ZXing with no network service or address-book access.
+
+QR validation verifies the ArmorChat cryptographic identifier, not the real-world
+identity of the person presenting it. A copied QR is not proof of private-key
+possession. Local labels are unauthenticated metadata. Contacts remain outside the
+identity-only `.armorbackup` format. See [contact exchange](docs/CONTACT_EXCHANGE.md)
+for validation, migration, privacy, limitations and physical acceptance checks.
 
 ## Reporting a vulnerability
 

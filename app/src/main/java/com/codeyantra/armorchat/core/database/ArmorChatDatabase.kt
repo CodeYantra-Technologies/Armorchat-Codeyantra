@@ -18,7 +18,7 @@ import com.codeyantra.armorchat.core.database.entity.MessageEntity
         ConversationEntity::class,
         MessageEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class ArmorChatDatabase : RoomDatabase() {

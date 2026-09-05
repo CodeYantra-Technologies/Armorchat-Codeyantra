@@ -15,6 +15,7 @@ data class IdentityQrPayload(
     val version: Int = CURRENT_VERSION,
 ) {
     companion object {
+        const val MAX_PAYLOAD_BYTES = 1024
         const val PRODUCT = "armorchat"
         const val CURRENT_VERSION = 1
 
@@ -40,18 +41,25 @@ data class IdentityQrPayload(
         }
 
         fun parse(raw: String): Result<IdentityQrPayload> = runCatching {
-            val text = raw.trim()
-            require(text.startsWith("{") && text.endsWith("}")) { "QR payload must be JSON object" }
-            val p = requiredString(text, "p")
-            require(p == PRODUCT) { "QR product must be $PRODUCT" }
-            val v = requiredInt(text, "v")
-            require(v == CURRENT_VERSION) { "Unsupported QR version: $v" }
-            val id = requiredString(text, "id")
-            val pk = requiredString(text, "pk")
+            require(raw.length <= MAX_PAYLOAD_BYTES && raw.toByteArray(Charsets.UTF_8).size <= MAX_PAYLOAD_BYTES) {
+                "QR payload exceeds size limit"
+            }
+            val fields = PublicQrJson.read(raw)
+            require(fields.keys == setOf("p", "v", "id", "pk")) { "Unexpected QR fields" }
+            require(fields["p"] == PRODUCT) { "QR product must be $PRODUCT" }
+            require(fields["v"] == CURRENT_VERSION) { "Unsupported QR version" }
+            val v = CURRENT_VERSION
+            val id = fields["id"] as? String ?: error("Missing ID")
+            val pk = fields["pk"] as? String ?: error("Missing public key")
+            require(pk.matches(Regex("[A-Za-z0-9_-]{43}"))) { "Invalid Base64URL public key" }
             val parsedId = ArmorChatId.parse(id).getOrThrow()
             val publicKey = Base64Url.decode(pk)
             require(publicKey.size == ArmorChatId.PUBLIC_KEY_LENGTH) {
                 "Public key must be ${ArmorChatId.PUBLIC_KEY_LENGTH} bytes"
+            }
+            require(Base64Url.encode(publicKey) == pk) { "Noncanonical Base64URL" }
+            require(org.bouncycastle.math.ec.rfc8032.Ed25519.validatePublicKeyFull(publicKey, 0)) {
+                "Invalid Ed25519 public key"
             }
             val expected = ArmorChatId.derive(publicKey)
             require(expected == parsedId.id) {
@@ -60,18 +68,5 @@ data class IdentityQrPayload(
             IdentityQrPayload(id = parsedId.id, publicKeyBase64Url = pk, version = v)
         }
 
-        private fun requiredString(json: String, key: String): String {
-            val pattern = """"$key"\s*:\s*"([^"]*)"""".toRegex()
-            val match = pattern.find(json)
-                ?: throw IllegalArgumentException("Missing string field: $key")
-            return match.groupValues[1]
-        }
-
-        private fun requiredInt(json: String, key: String): Int {
-            val pattern = """"$key"\s*:\s*(-?\d+)""".toRegex()
-            val match = pattern.find(json)
-                ?: throw IllegalArgumentException("Missing int field: $key")
-            return match.groupValues[1].toInt()
-        }
     }
 }

@@ -5,7 +5,7 @@ import org.junit.Test
 
 class IdentityQrPayloadTest {
 
-    private val publicKey = ByteArray(32) { (31 - it).toByte() }
+    private val publicKey = org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters(ByteArray(32) { (31 - it).toByte() }, 0).generatePublicKey().encoded
 
     @Test
     fun serializeParse_roundTrip_andBinding() {

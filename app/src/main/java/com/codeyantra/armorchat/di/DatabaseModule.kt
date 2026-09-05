@@ -27,6 +27,7 @@ object DatabaseModule {
             ArmorChatDatabase::class.java,
             "armorchat.db",
         )
+            .addMigrations(com.codeyantra.armorchat.core.database.CONTACT_MIGRATION_2_3)
             .fallbackToDestructiveMigrationFrom(dropAllTables = true, 1)
             .build()
     }

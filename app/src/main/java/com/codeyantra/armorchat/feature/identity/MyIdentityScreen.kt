@@ -211,6 +211,20 @@ fun MyIdentityScreen(
                 ) {
                     Text(stringResource(R.string.action_share_id))
                 }
+                if (qrContent != null) {
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = {
+                            val send = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_TEXT, qrContent)
+                            }
+                            context.startActivity(Intent.createChooser(send, "Share public contact payload"))
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                    ) { Text("Share public contact payload") }
+                }
                 Spacer(Modifier.height(28.dp))
                 Text(
                     text = stringResource(R.string.identity_backup_title),
