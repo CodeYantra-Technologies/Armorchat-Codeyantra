@@ -11,4 +11,9 @@ object Routes {
     const val About = "about"
     const val OpenSourceLicenses = "about/open_source_licenses"
     const val Support = "support"
+    const val Chat = "chat/{conversationId}"
+    const val ContactDetail = "contact/{contactId}"
+
+    fun chat(conversationId: String) = "chat/$conversationId"
+    fun contactDetail(contactId: String) = "contact/$contactId"
 }

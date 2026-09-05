@@ -19,6 +19,12 @@ class ContactRepositoryImpl @Inject constructor(
 ) : ContactRepository {
     override fun observeContacts() = contactDao.observeAll().map { rows -> rows.map { it.domain() } }
 
+    override fun observeContact(id: String) = contactDao.observeById(id).map { it?.domain() }
+
+    override suspend fun getContact(id: String): Contact? = withContext(dispatchers.io) {
+        contactDao.findById(id)?.domain()
+    }
+
     override suspend fun inspectQr(raw: String): ContactExchangeResult = withContext(dispatchers.io) {
         val payload = IdentityQrPayload.parse(raw).getOrNull() ?: return@withContext ContactExchangeResult.Invalid
         val localId = contactDao.localArmorChatId() ?: return@withContext ContactExchangeResult.NoLocalIdentity

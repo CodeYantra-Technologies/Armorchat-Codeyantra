@@ -15,7 +15,7 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "0.2.0-identity"
+        versionName = "0.3.0-chat-ui"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

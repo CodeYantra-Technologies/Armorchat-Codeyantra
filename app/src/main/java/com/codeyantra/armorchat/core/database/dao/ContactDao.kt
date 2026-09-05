@@ -9,6 +9,12 @@ interface ContactDao {
     @Query("SELECT * FROM contacts ORDER BY displayName COLLATE NOCASE, createdAtEpochMs, id")
     fun observeAll(): Flow<List<ContactEntity>>
 
+    @Query("SELECT * FROM contacts WHERE id = :id LIMIT 1")
+    fun observeById(id: String): Flow<ContactEntity?>
+
+    @Query("SELECT * FROM contacts WHERE id = :id LIMIT 1")
+    suspend fun findById(id: String): ContactEntity?
+
     @Query("SELECT * FROM contacts WHERE armorChatId = :armorChatId LIMIT 1")
     suspend fun findByArmorChatId(armorChatId: String): ContactEntity?
 

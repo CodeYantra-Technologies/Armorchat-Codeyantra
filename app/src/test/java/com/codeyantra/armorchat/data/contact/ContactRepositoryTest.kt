@@ -23,6 +23,8 @@ class ContactRepositoryTest {
         val rows = MutableStateFlow<List<ContactEntity>>(emptyList())
         var race: ContactEntity? = null
         override fun observeAll() = rows
+        override fun observeById(id: String) = rows.map { list -> list.find { it.id == id } }
+        override suspend fun findById(id: String) = rows.value.find { it.id == id }
         override suspend fun findByArmorChatId(armorChatId: String) = rows.value.find { it.armorChatId == armorChatId }
         override suspend fun localArmorChatId() = localId
         override suspend fun insert(contact: ContactEntity): Long {

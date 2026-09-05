@@ -35,6 +35,7 @@ fun HomeScreen(
     onAbout: () -> Unit,
     onSupport: () -> Unit,
     onMyIdentity: () -> Unit,
+    onOpenConversation: (conversationId: String) -> Unit,
 ) {
     val tabs = listOf(
         HomeTab(R.string.tab_chats, Icons.Outlined.ChatBubbleOutline),
@@ -68,8 +69,8 @@ fun HomeScreen(
     ) { padding ->
         val modifier = Modifier.padding(padding)
         when (selected) {
-            0 -> ChatsScreen(modifier)
-            1 -> ContactsScreen(modifier)
+            0 -> ChatsScreen(onOpenConversation = onOpenConversation, modifier = modifier)
+            1 -> ContactsScreen(onOpenConversation = onOpenConversation, modifier = modifier)
             else -> SettingsScreen(
                 modifier = modifier,
                 onAbout = onAbout,

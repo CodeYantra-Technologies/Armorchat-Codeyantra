@@ -1,6 +1,8 @@
 package com.codeyantra.armorchat.core.database.dao
 
 import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import com.codeyantra.armorchat.core.database.entity.MessageEntity
 import kotlinx.coroutines.flow.Flow
@@ -9,4 +11,7 @@ import kotlinx.coroutines.flow.Flow
 interface MessageDao {
     @Query("SELECT * FROM messages WHERE conversationId = :conversationId ORDER BY createdAtEpochMs ASC")
     fun observeByConversation(conversationId: String): Flow<List<MessageEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insert(message: MessageEntity): Long
 }

@@ -20,6 +20,9 @@ import androidx.room.PrimaryKey
 data class MessageEntity(
     @PrimaryKey val id: String,
     val conversationId: String,
+    val type: String,
+    val isOutgoing: Boolean,
+    val localPlaintext: String?,
     val ciphertext: ByteArray?,
     val status: String,
     val createdAtEpochMs: Long,

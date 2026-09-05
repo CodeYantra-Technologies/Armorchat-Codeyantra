@@ -100,7 +100,8 @@ Sources: [CameraX releases](https://developer.android.com/jetpack/androidx/relea
 [Robolectric](https://github.com/robolectric/robolectric),
 [AndroidX Test releases](https://developer.android.com/jetpack/androidx/releases/test).
 
-Only CAMERA permission is added, requested only after tapping Scan ArmorChat QR.
+CAMERA permission is added, requested only after tapping Scan ArmorChat QR.
+Gallery import uses GetContent and does not request storage/media permissions.
 Camera hardware is optional. No microphone/location/storage/contacts permissions,
 address-book integration, scanner analytics, uploads or network service are added.
 Frames and decoded text are not logged or written to disk. ZXing is restricted to
@@ -109,6 +110,20 @@ uses keep-latest backpressure, accounts for luminance row/pixel strides, and clo
 every frame. The first decoded QR stops scanning, including invalid QR payloads;
 retry is explicit. Leaving the scanner unbinds camera use cases and shuts down the
 executor. Validation and Room work run off the main thread, not in recomposition.
+
+## Gallery QR import
+
+Add Contact also offers **Choose from Gallery**. The app uses Android’s
+`ActivityResultContracts.GetContent` (`image/*`) so the system photo picker / SAF
+grants one-time URI access — no `READ_MEDIA_IMAGES` or storage permission is
+requested. Camera permission remains required only for live Scan ArmorChat QR.
+
+The selected image is decoded on-device with ZXing (`RGBLuminanceSource` /
+`HybridBinarizer`, QR-only hints). Large images are downsampled before decode.
+Decoded text is passed through the same `ContactsViewModel.scan` →
+`ContactRepository.inspectQr` / `addQr` pipeline as camera frames: recompute
+`ac1`, reject mismatch, self-scan, duplicates, and key conflicts. Frames/images
+and decoded text are not logged or persisted by the decoder.
 
 ## Automated tests
 

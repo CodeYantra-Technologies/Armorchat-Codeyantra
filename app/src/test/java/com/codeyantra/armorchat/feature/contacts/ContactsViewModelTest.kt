@@ -3,6 +3,8 @@ package com.codeyantra.armorchat.feature.contacts
 import com.codeyantra.armorchat.domain.identity.IdentityQrPayload
 import com.codeyantra.armorchat.domain.model.*
 import com.codeyantra.armorchat.domain.repository.ContactRepository
+import com.codeyantra.armorchat.domain.repository.ConversationRepository
+import com.codeyantra.armorchat.domain.model.Conversation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,12 +18,21 @@ class ContactsViewModelTest {
     @Before fun setup() { Dispatchers.setMain(dispatcher) }
     @After fun cleanup() { Dispatchers.resetMain() }
 
+    private class Conversations : ConversationRepository {
+        override fun observeConversations() = MutableStateFlow<List<Conversation>>(emptyList())
+        override fun observeConversation(id: String) = MutableStateFlow<Conversation?>(null)
+        override suspend fun getConversation(id: String): Conversation? = null
+        override suspend fun getOrCreateForContact(contact: Contact) =
+            Conversation("c-" + contact.id, contact.id, contact.displayName, 1)
+    }
     private class Repository : ContactRepository {
         var inspections = 0
         var saves = 0
         var fail = false
         val payload = IdentityQrPayload("ac1:test-only", "public-test-only")
         override fun observeContacts() = MutableStateFlow<List<Contact>>(emptyList())
+        override fun observeContact(id: String) = MutableStateFlow<Contact?>(null)
+        override suspend fun getContact(id: String): Contact? = null
         override suspend fun inspectQr(raw: String): ContactExchangeResult {
             inspections++
             if (fail) error("Sensitive internal failure details")
@@ -35,7 +46,7 @@ class ContactsViewModelTest {
     }
 
     @Test fun duplicateFrameAndDoubleSaveAreCoalesced() = runTest(dispatcher) {
-        val repository = Repository(); val vm = ContactsViewModel(repository)
+        val repository = Repository(); val vm = ContactsViewModel(repository, Conversations())
         vm.scan("public QR"); vm.scan("duplicate frame")
         assertTrue(vm.state.value.busy)
         advanceUntilIdle()
@@ -49,7 +60,7 @@ class ContactsViewModelTest {
     }
 
     @Test fun resetDropsPendingPayloadAndPreventsSave() = runTest(dispatcher) {
-        val repository = Repository(); val vm = ContactsViewModel(repository)
+        val repository = Repository(); val vm = ContactsViewModel(repository, Conversations())
         vm.scan("public QR"); advanceUntilIdle()
         vm.reset(); vm.save("Name"); advanceUntilIdle()
         assertEquals(0, repository.saves)
@@ -57,7 +68,7 @@ class ContactsViewModelTest {
     }
 
     @Test fun storageFailureHasRecoverableNonSensitiveError() = runTest(dispatcher) {
-        val repository = Repository().apply { fail = true }; val vm = ContactsViewModel(repository)
+        val repository = Repository().apply { fail = true }; val vm = ContactsViewModel(repository, Conversations())
         vm.scan("public QR"); advanceUntilIdle()
         assertFalse(vm.state.value.busy)
         assertNotNull(vm.state.value.error)

@@ -1,6 +1,7 @@
 package com.codeyantra.armorchat.domain.identity
 
 import com.google.common.truth.Truth.assertThat
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ArmorChatIdTest {
@@ -64,5 +65,14 @@ class ArmorChatIdTest {
         } catch (e: IllegalArgumentException) {
             assertThat(e).isInstanceOf(IllegalArgumentException::class.java)
         }
+    }
+
+    @Test
+    fun shortDisplayKeepsPrefixAndEllipsis() {
+        val id = ArmorChatId.derive(ByteArray(32) { 7 })
+        val short = ArmorChatId.shortDisplay(id)
+        assertTrue(short.startsWith("ac1:"))
+        assertTrue(short.contains("…"))
+        assertTrue(short.length < id.length)
     }
 }

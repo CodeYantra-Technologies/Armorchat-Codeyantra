@@ -79,6 +79,14 @@ object ArmorChatId {
     fun normalize(id: String): String =
         parse(id).getOrElse { throw it }.id
 
+    /** Compact form for chat headers: ac1:ABCD…WXYZ */
+    fun shortDisplay(id: String): String {
+        val normalized = parse(id).getOrNull()?.id ?: return id.take(16)
+        val body = normalized.removePrefix(PREFIX)
+        if (body.length <= 10) return normalized
+        return PREFIX + body.take(4) + "…" + body.takeLast(4)
+    }
+
     fun fingerprintOf(publicKeyBytes: ByteArray): ByteArray {
         val digest = MessageDigest.getInstance("SHA-256").digest(publicKeyBytes)
         return digest.copyOfRange(0, FINGERPRINT_LENGTH)

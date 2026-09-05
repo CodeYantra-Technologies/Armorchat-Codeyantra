@@ -6,10 +6,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.navigation.NavHostController
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.codeyantra.armorchat.domain.model.UserIdentity
+import com.codeyantra.armorchat.feature.chat.ChatRoute
+import com.codeyantra.armorchat.feature.contacts.ContactDetailRoute
 import com.codeyantra.armorchat.feature.home.HomeScreen
 import com.codeyantra.armorchat.feature.identity.CreateIdentityRoute
 import com.codeyantra.armorchat.feature.identity.IdentityCreatedScreen
@@ -61,7 +65,6 @@ fun ArmorChatNavGraph(
         composable(Routes.IdentityCreated) {
             val identity = pendingCreatedIdentity
             if (identity == null) {
-                // Guard against process death without saved state — return to welcome.
                 navController.navigate(Routes.Welcome) {
                     popUpTo(Routes.IdentityCreated) { inclusive = true }
                 }
@@ -92,6 +95,34 @@ fun ArmorChatNavGraph(
                 onAbout = { navController.navigate(Routes.About) },
                 onSupport = { navController.navigate(Routes.Support) },
                 onMyIdentity = { navController.navigate(Routes.MyIdentity) },
+                onOpenConversation = { conversationId ->
+                    navController.navigate(Routes.chat(conversationId))
+                },
+            )
+        }
+        composable(
+            route = Routes.Chat,
+            arguments = listOf(navArgument("conversationId") { type = NavType.StringType }),
+        ) {
+            ChatRoute(
+                onBack = { navController.popBackStack() },
+                onOpenContact = { contactId ->
+                    navController.navigate(Routes.contactDetail(contactId))
+                },
+            )
+        }
+        composable(
+            route = Routes.ContactDetail,
+            arguments = listOf(navArgument("contactId") { type = NavType.StringType }),
+        ) {
+            ContactDetailRoute(
+                onBack = { navController.popBackStack() },
+                onOpenConversation = { conversationId ->
+                    navController.navigate(Routes.chat(conversationId)) {
+                        // Prefer a single chat instance for this conversation.
+                        launchSingleTop = true
+                    }
+                },
             )
         }
         composable(Routes.MyIdentity) {
