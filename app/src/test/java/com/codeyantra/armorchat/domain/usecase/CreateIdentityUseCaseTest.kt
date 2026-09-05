@@ -21,6 +21,12 @@ class CreateIdentityUseCaseTest {
 }
 
 internal class FakeIdentityRepository : IdentityRepository {
+    private val identity = UserIdentity(
+        armorChatId = "ac1:TESTID000000000000000000000000",
+        publicIdentityKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        createdAtEpochMs = 1L,
+        version = 1,
+    )
     private val state = MutableStateFlow<UserIdentity?>(null)
 
     override fun observeIdentity(): Flow<UserIdentity?> = state
@@ -28,12 +34,16 @@ internal class FakeIdentityRepository : IdentityRepository {
     override suspend fun getIdentity(): UserIdentity? = state.value
 
     override suspend fun createIdentity(): UserIdentity {
-        val identity = UserIdentity(
-            armorChatId = "ac1:TESTID000000000000000000000000",
-            publicIdentityKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            createdAtEpochMs = 1L,
-            version = 1,
-        )
+        state.value = identity
+        return identity
+    }
+
+    override suspend fun exportIdentityBackup(password: CharArray): ByteArray = byteArrayOf(1, 2, 3)
+
+    override suspend fun restoreIdentityBackup(
+        backupBytes: ByteArray,
+        password: CharArray,
+    ): UserIdentity {
         state.value = identity
         return identity
     }

@@ -92,6 +92,7 @@ dependencies {
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.tink.android)
     implementation(libs.zxing.core)
+    implementation(libs.bouncycastle.provider)
     implementation(libs.okhttp)
     implementation(libs.kotlinx.coroutines.android)
 

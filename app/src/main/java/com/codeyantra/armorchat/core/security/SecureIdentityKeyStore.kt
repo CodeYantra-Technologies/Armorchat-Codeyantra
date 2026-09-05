@@ -27,4 +27,21 @@ interface SecureIdentityKeyStore {
      * Never auto-creates a replacement identity.
      */
     suspend fun loadPublicKeyBytes(): ByteArray
+
+    /**
+     * Decrypts and returns the serialized Tink Ed25519 private keyset for an
+     * explicit user-controlled encrypted backup flow.
+     *
+     * Callers must immediately wrap the returned bytes in authenticated backup
+     * encryption and wipe the returned array when finished.
+     */
+    suspend fun exportSerializedKeyset(): ByteArray
+
+    /**
+     * Imports a previously serialized Tink Ed25519 keyset, validates it, then
+     * seals it with this device's non-exportable Android Keystore KEK.
+     *
+     * @return raw 32-byte Ed25519 public key
+     */
+    suspend fun importSerializedKeyset(serializedKeyset: ByteArray): ByteArray
 }

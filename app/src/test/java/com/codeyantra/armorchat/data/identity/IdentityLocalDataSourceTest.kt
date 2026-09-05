@@ -3,6 +3,7 @@ package com.codeyantra.armorchat.data.identity
 import com.codeyantra.armorchat.core.common.AppClock
 import com.codeyantra.armorchat.core.database.dao.IdentityDao
 import com.codeyantra.armorchat.core.database.entity.IdentityEntity
+import com.codeyantra.armorchat.core.recovery.IdentityBackupCrypto
 import com.codeyantra.armorchat.core.security.IdentityStorageException
 import com.codeyantra.armorchat.core.security.SecureIdentityKeyStore
 import com.codeyantra.armorchat.domain.identity.ArmorChatId
@@ -23,7 +24,7 @@ class IdentityLocalDataSourceTest {
     fun create_isIdempotent() = runTest {
         val keys = FakeSecureIdentityKeyStore(publicKey)
         val dao = FakeIdentityDao()
-        val ds = IdentityLocalDataSource(dao, keys, FixedClock(1000L))
+        val ds = IdentityLocalDataSource(dao, keys, FixedClock(1000L), IdentityBackupCrypto())
 
         val first = ds.createIdentity()
         val second = ds.createIdentity()
@@ -38,7 +39,7 @@ class IdentityLocalDataSourceTest {
     fun concurrentCreate_callsGenerateOnlyOneIdentity() = runTest {
         val keys = FakeSecureIdentityKeyStore(publicKey)
         val dao = FakeIdentityDao()
-        val ds = IdentityLocalDataSource(dao, keys, FixedClock(1000L))
+        val ds = IdentityLocalDataSource(dao, keys, FixedClock(1000L), IdentityBackupCrypto())
 
         val identities = listOf(
             async { ds.createIdentity() },
@@ -63,7 +64,7 @@ class IdentityLocalDataSourceTest {
                 version = 1,
             ),
         )
-        val ds = IdentityLocalDataSource(dao, keys, FixedClock(2000L))
+        val ds = IdentityLocalDataSource(dao, keys, FixedClock(2000L), IdentityBackupCrypto())
 
         try {
             ds.createIdentity()
@@ -87,7 +88,7 @@ class IdentityLocalDataSourceTest {
                 version = 1,
             ),
         )
-        val ds = IdentityLocalDataSource(dao, keys, FixedClock(3L))
+        val ds = IdentityLocalDataSource(dao, keys, FixedClock(3L), IdentityBackupCrypto())
         try {
             ds.createIdentity()
             throw AssertionError("expected IdentityStorageException")
@@ -101,7 +102,7 @@ class IdentityLocalDataSourceTest {
     fun create_doesNotRebuildWhenKeyMaterialHasNoMetadata() = runTest {
         val keys = FakeSecureIdentityKeyStore(publicKey).also { it.markExisting() }
         val dao = FakeIdentityDao()
-        val ds = IdentityLocalDataSource(dao, keys, FixedClock(3L))
+        val ds = IdentityLocalDataSource(dao, keys, FixedClock(3L), IdentityBackupCrypto())
 
         try {
             ds.createIdentity()
@@ -113,6 +114,49 @@ class IdentityLocalDataSourceTest {
         assertThat(dao.get()).isNull()
     }
 
+    @Test
+    fun backupAndRestore_preservesArmorChatId() = runTest {
+        val sourceKeys = FakeSecureIdentityKeyStore(publicKey)
+        val sourceDao = FakeIdentityDao()
+        val backupCrypto = IdentityBackupCrypto()
+        val source = IdentityLocalDataSource(sourceDao, sourceKeys, FixedClock(1000L), backupCrypto)
+        val original = source.createIdentity()
+
+        val backup = source.exportIdentityBackup("correct horse battery".toCharArray())
+
+        val targetKeys = FakeSecureIdentityKeyStore(publicKey)
+        val targetDao = FakeIdentityDao()
+        val target = IdentityLocalDataSource(targetDao, targetKeys, FixedClock(9000L), backupCrypto)
+        val restored = target.restoreIdentityBackup(backup, "correct horse battery".toCharArray())
+
+        assertThat(restored.armorChatId).isEqualTo(original.armorChatId)
+        assertThat(restored.publicIdentityKey).isEqualTo(original.publicIdentityKey)
+        assertThat(restored.createdAtEpochMs).isEqualTo(original.createdAtEpochMs)
+    }
+
+    @Test
+    fun restore_refusesToOverwriteExistingIdentity() = runTest {
+        val source = IdentityLocalDataSource(
+            FakeIdentityDao(),
+            FakeSecureIdentityKeyStore(publicKey),
+            FixedClock(1000L),
+            IdentityBackupCrypto(),
+        )
+        source.createIdentity()
+        val backup = source.exportIdentityBackup("correct horse battery".toCharArray())
+
+        val targetKeys = FakeSecureIdentityKeyStore(publicKey)
+        val targetDao = FakeIdentityDao()
+        val target = IdentityLocalDataSource(targetDao, targetKeys, FixedClock(2000L), IdentityBackupCrypto())
+        target.createIdentity()
+
+        try {
+            target.restoreIdentityBackup(backup, "correct horse battery".toCharArray())
+            throw AssertionError("expected IdentityStorageException")
+        } catch (e: IdentityStorageException.InconsistentState) {
+            assertThat(e.message).contains("only allowed")
+        }
+    }
 }
 
 private class FixedClock(private val now: Long) : AppClock {
@@ -142,6 +186,7 @@ private class FakeSecureIdentityKeyStore(
     var createCount = 0
         private set
     private var stored = false
+    private var serializedKeyset = ByteArray(48) { (it + 1).toByte() }
 
     fun markExisting() {
         stored = true
@@ -165,4 +210,16 @@ private class FakeSecureIdentityKeyStore(
         return publicKey.copyOf()
     }
 
+    override suspend fun exportSerializedKeyset(): ByteArray {
+        if (!stored) {
+            throw IdentityStorageException.Corrupted("missing")
+        }
+        return serializedKeyset.copyOf()
+    }
+
+    override suspend fun importSerializedKeyset(serializedKeyset: ByteArray): ByteArray {
+        stored = true
+        this.serializedKeyset = serializedKeyset.copyOf()
+        return publicKey.copyOf()
+    }
 }

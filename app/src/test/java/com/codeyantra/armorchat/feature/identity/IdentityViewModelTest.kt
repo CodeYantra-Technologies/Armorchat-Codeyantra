@@ -3,7 +3,9 @@ package com.codeyantra.armorchat.feature.identity
 import com.codeyantra.armorchat.domain.model.UserIdentity
 import com.codeyantra.armorchat.domain.repository.IdentityRepository
 import com.codeyantra.armorchat.domain.usecase.CreateIdentityUseCase
+import com.codeyantra.armorchat.domain.usecase.CreateIdentityBackupUseCase
 import com.codeyantra.armorchat.domain.usecase.ObserveIdentityUseCase
+import com.codeyantra.armorchat.domain.usecase.RestoreIdentityUseCase
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -38,6 +40,8 @@ class IdentityViewModelTest {
         val viewModel = IdentityViewModel(
             observeIdentity = ObserveIdentityUseCase(repository),
             createIdentity = CreateIdentityUseCase(repository),
+            createIdentityBackup = CreateIdentityBackupUseCase(repository),
+            restoreIdentity = RestoreIdentityUseCase(repository),
         )
 
         viewModel.create {}
@@ -72,4 +76,13 @@ private class CountingIdentityRepository : IdentityRepository {
         return identity
     }
 
+    override suspend fun exportIdentityBackup(password: CharArray): ByteArray = byteArrayOf(1, 2, 3)
+
+    override suspend fun restoreIdentityBackup(
+        backupBytes: ByteArray,
+        password: CharArray,
+    ): UserIdentity {
+        state.value = identity
+        return identity
+    }
 }

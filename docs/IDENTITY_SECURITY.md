@@ -1,6 +1,6 @@
-# ArmorChat Identity Security (Phase 1A)
+# ArmorChat Identity Security (Phase 1A / 1B)
 
-Status: **Secure local identity foundation** — not complete end-to-end encryption.
+Status: **Secure local identity foundation plus user-controlled encrypted identity backup** — not complete end-to-end encryption.
 
 ## Threat assumptions
 
@@ -98,13 +98,125 @@ Rules:
 
 `Context.noBackupFilesDir` / `identity` / `ed25519_identity.v1.enc`
 
-## Backup / restore behavior
+## Phase 1B backup / restore behavior
 
 - `android:allowBackup="false"`
 - Identity blobs under `noBackupFilesDir` (excluded from auto backup)
 - Cloud / device-transfer backup rules exclude app files and databases
-- **Restore UI** in this phase is an informational placeholder — no fake UUID restore
-- Secure recovery / export is **postponed**
+- Backup and restore are explicit user actions using Android Storage Access
+  Framework. The app does not request broad storage permission.
+- Backup output uses the extension `.armorbackup`.
+- Suggested filename: `armorchat-identity-<timestamp>.armorbackup`; the
+  ArmorChat ID is intentionally not included in the filename.
+- Restore is only allowed before an identity exists on the current device.
+  Existing identity metadata or key material blocks import.
+
+### Backup content
+
+Only the material required to reconstruct the same cryptographic identity is
+backed up:
+
+```kotlin
+BackupPayload {
+    payloadVersion = 1
+    cryptoVersion
+    identityCreatedAtEpochMs
+    serializedTinkEd25519PrivateKeyset
+}
+```
+
+The payload does **not** include chat history, contacts, analytics, device
+identifiers, access tokens, QR bitmaps, cached UI state, or the Android
+Keystore KEK. The KEK is device-specific and non-exportable by design.
+
+### Password KDF
+
+The backup password is never used directly as an encryption key.
+
+Phase 1B uses **scrypt**:
+
+- Library: `org.bouncycastle:bcprov-jdk18on:1.81`
+- Maintenance: current Maven Central release line as of September 5, 2026
+- License: Bouncy Castle Licence
+- Android compatibility: JVM library, compatible with the app's minSdk 26
+- Parameters: `N=32768`, `r=8`, `p=1`, salt length 16 bytes, output length 32
+  bytes
+
+Argon2id was evaluated and remains acceptable cryptographically, but the
+available Android binding introduces native/JNI loading risk in the identity
+recovery path. PBKDF2 was not selected because Phase 1B has no compatibility
+requirement that justifies a non-memory-hard KDF.
+
+### Backup encryption
+
+```
+password
+  ↓
+scrypt + random salt
+  ↓
+32-byte backup encryption key
+  ↓
+AES-256-GCM with random 96-bit nonce and authenticated header
+  ↓
+encrypted BackupPayload
+```
+
+The AES-GCM authentication tag detects wrong passwords, corrupted files, and
+tampered headers. The UI surfaces these as restore failure and never creates a
+replacement identity.
+
+### Binary container format
+
+All multi-byte integers are big-endian.
+
+```text
+magic(8)              ASCII "ACIDBKP1"
+formatVersion(1)      0x01
+kdfId(1)              0x01 = scrypt
+aeadId(1)             0x01 = AES-256-GCM
+scryptLogN(1)         15
+scryptR(4)            8
+scryptP(4)            1
+keyLen(1)             32
+saltLen(1)            16
+nonceLen(1)           12
+ciphertextLen(4)      ciphertext bytes including GCM tag
+salt(saltLen)
+nonce(nonceLen)
+ciphertextAndTag(ciphertextLen)
+```
+
+The fixed header is authenticated as AES-GCM associated data. Future versions
+must either add a new `formatVersion` or a new `kdfId` / `aeadId`; unsupported
+parameters are rejected before decrypt.
+
+### Import validation
+
+Restore performs these checks before committing Room metadata:
+
+1. Parse the backup container and reject unsupported versions/parameters.
+2. Derive the backup encryption key with scrypt.
+3. AES-GCM decrypt the payload; authentication failure is treated as wrong
+   password / tampering.
+4. Parse the serialized Tink keyset and require an Ed25519 primary key.
+5. Extract the public key and derive the ArmorChat ID from it.
+6. Re-seal the imported keyset with the restoring device's Android Keystore
+   KEK.
+7. Store public metadata in Room only after the keyset write succeeds.
+
+Critical invariant: the restored ArmorChat ID is derived from the restored
+Ed25519 public key. Restore never accepts a caller-provided ArmorChat ID and
+never creates a replacement identity on failure.
+
+### Limitations
+
+- ArmorChat cannot recover a forgotten backup password.
+- Anyone with the `.armorbackup` file can attempt offline password guessing, so
+  users must choose a strong passphrase and store the file carefully.
+- The backup protects identity key material only. It does not restore messages,
+  contacts, device trust decisions, or future session keys.
+- A compromised device at export or import time can still observe plaintext
+  key material in process memory.
 
 ## Corrupted / missing KEK behavior
 

@@ -16,4 +16,12 @@ class IdentityRepositoryImpl @Inject constructor(
     override suspend fun getIdentity(): UserIdentity? = local.getIdentity()
 
     override suspend fun createIdentity(): UserIdentity = local.createIdentity()
+
+    override suspend fun exportIdentityBackup(password: CharArray): ByteArray =
+        local.exportIdentityBackup(password)
+
+    override suspend fun restoreIdentityBackup(
+        backupBytes: ByteArray,
+        password: CharArray,
+    ): UserIdentity = local.restoreIdentityBackup(backupBytes, password)
 }

@@ -79,6 +79,11 @@ fun ArmorChatNavGraph(
         composable(Routes.RestoreIdentity) {
             RestoreIdentityRoute(
                 onBack = { navController.popBackStack() },
+                onRestored = {
+                    navController.navigate(Routes.Home) {
+                        popUpTo(Routes.Welcome) { inclusive = true }
+                    }
+                },
             )
         }
         composable(Routes.Home) {

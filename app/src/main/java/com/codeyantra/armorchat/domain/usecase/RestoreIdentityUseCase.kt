@@ -1,17 +1,20 @@
 package com.codeyantra.armorchat.domain.usecase
 
 import com.codeyantra.armorchat.domain.model.UserIdentity
+import com.codeyantra.armorchat.domain.repository.IdentityRepository
+import kotlinx.coroutines.CancellationException
 import javax.inject.Inject
 
-/**
- * Secure backup / recovery is postponed to a later phase.
- * This use case always fails — the Restore UI is informational only.
- */
-class RestoreIdentityUseCase @Inject constructor() {
-    suspend operator fun invoke(@Suppress("UNUSED_PARAMETER") recoveryMaterial: String): Result<UserIdentity> =
-        Result.failure(
-            UnsupportedOperationException(
-                "Secure identity backup and recovery is not available in this version.",
-            ),
-        )
+class RestoreIdentityUseCase @Inject constructor(
+    private val identityRepository: IdentityRepository,
+) {
+    suspend operator fun invoke(backupBytes: ByteArray, password: CharArray): Result<UserIdentity> {
+        return try {
+            Result.success(identityRepository.restoreIdentityBackup(backupBytes, password))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 }

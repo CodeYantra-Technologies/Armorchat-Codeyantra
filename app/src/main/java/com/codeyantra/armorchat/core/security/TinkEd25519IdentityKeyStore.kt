@@ -85,21 +85,7 @@ class TinkEd25519IdentityKeyStore @Inject constructor(
     override suspend fun loadPublicKeyBytes(): ByteArray = mutex.withLock {
         withContext(Dispatchers.IO) {
             ensureTinkRegistered()
-            val file = blobFile()
-            if (!file.exists() || file.length() == 0L) {
-                throw IdentityStorageException.Corrupted(
-                    "Encrypted Ed25519 identity blob is missing.",
-                )
-            }
-            val envelope = try {
-                file.readBytes()
-            } catch (e: Exception) {
-                throw IdentityStorageException.Corrupted(
-                    "Unable to read encrypted identity blob.",
-                    e,
-                )
-            }
-            val clearKeyset = kek.decrypt(envelope)
+            val clearKeyset = loadSerializedKeyset()
             try {
                 val handle = TinkProtoKeysetFormat.parseKeyset(
                     clearKeyset,
@@ -119,9 +105,95 @@ class TinkEd25519IdentityKeyStore @Inject constructor(
         }
     }
 
+    override suspend fun exportSerializedKeyset(): ByteArray = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            ensureTinkRegistered()
+            val clearKeyset = loadSerializedKeyset()
+            try {
+                val handle = TinkProtoKeysetFormat.parseKeyset(
+                    clearKeyset,
+                    InsecureSecretKeyAccess.get(),
+                )
+                extractPublicKeyBytes(handle)
+                clearKeyset
+            } catch (e: IdentityStorageException) {
+                clearKeyset.fill(0)
+                throw e
+            } catch (e: Exception) {
+                clearKeyset.fill(0)
+                throw IdentityStorageException.DecryptFailed(
+                    "Parsed identity keyset is invalid after decrypt.",
+                    e,
+                )
+            }
+        }
+    }
+
+    override suspend fun importSerializedKeyset(serializedKeyset: ByteArray): ByteArray = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            ensureTinkRegistered()
+            val keysetCopy = serializedKeyset.copyOf()
+            val publicKey = try {
+                val handle = TinkProtoKeysetFormat.parseKeyset(
+                    keysetCopy,
+                    InsecureSecretKeyAccess.get(),
+                )
+                extractPublicKeyBytes(handle)
+            } catch (e: IdentityStorageException) {
+                throw e
+            } catch (e: Exception) {
+                throw IdentityStorageException.Corrupted(
+                    "Imported Ed25519 identity keyset is invalid.",
+                    e,
+                )
+            }
+            val envelope = kek.encrypt(keysetCopy)
+            keysetCopy.fill(0)
+            writeEnvelope(envelope)
+            publicKey
+        }
+    }
+
     private fun blobFile(): File {
         val dir = File(context.noBackupFilesDir, RELATIVE_DIR)
         return File(dir, BLOB_NAME)
+    }
+
+    private fun loadSerializedKeyset(): ByteArray {
+        val file = blobFile()
+        if (!file.exists() || file.length() == 0L) {
+            throw IdentityStorageException.Corrupted(
+                "Encrypted Ed25519 identity blob is missing.",
+            )
+        }
+        val envelope = try {
+            file.readBytes()
+        } catch (e: Exception) {
+            throw IdentityStorageException.Corrupted(
+                "Unable to read encrypted identity blob.",
+                e,
+            )
+        }
+        return kek.decrypt(envelope)
+    }
+
+    private fun writeEnvelope(envelope: ByteArray) {
+        val file = blobFile()
+        file.parentFile?.mkdirs()
+        val tmp = File(file.parentFile, "${file.name}.tmp")
+        try {
+            tmp.writeBytes(envelope)
+            if (!tmp.renameTo(file)) {
+                file.writeBytes(envelope)
+                tmp.delete()
+            }
+        } catch (e: Exception) {
+            tmp.delete()
+            throw IdentityStorageException.Corrupted(
+                "Failed to persist encrypted identity key blob.",
+                e,
+            )
+        }
     }
 
     private fun extractPublicKeyBytes(handle: KeysetHandle): ByteArray {

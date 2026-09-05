@@ -19,6 +19,7 @@ junit = "4.13.2"
 truth = "1.4.4"
 tink = "1.21.0"
 zxing = "3.5.3"
+bouncycastle = "1.81"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -62,6 +63,7 @@ truth = { group = "com.google.truth", name = "truth", version.ref = "truth" }
 
 tink-android = { group = "com.google.crypto.tink", name = "tink-android", version.ref = "tink" }
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
+bouncycastle-provider = { group = "org.bouncycastle", name = "bcprov-jdk18on", version.ref = "bouncycastle" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

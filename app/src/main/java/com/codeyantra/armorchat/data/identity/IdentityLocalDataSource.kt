@@ -3,6 +3,9 @@ package com.codeyantra.armorchat.data.identity
 import com.codeyantra.armorchat.core.common.AppClock
 import com.codeyantra.armorchat.core.database.dao.IdentityDao
 import com.codeyantra.armorchat.core.database.entity.IdentityEntity
+import com.codeyantra.armorchat.core.recovery.IdentityBackupCrypto
+import com.codeyantra.armorchat.core.recovery.IdentityBackupException
+import com.codeyantra.armorchat.core.recovery.IdentityBackupPayload
 import com.codeyantra.armorchat.core.security.IdentityStorageException
 import com.codeyantra.armorchat.core.security.SecureIdentityKeyStore
 import com.codeyantra.armorchat.domain.identity.ArmorChatId
@@ -24,6 +27,7 @@ class IdentityLocalDataSource @Inject constructor(
     private val identityDao: IdentityDao,
     private val secureIdentityKeyStore: SecureIdentityKeyStore,
     private val clock: AppClock,
+    private val backupCrypto: IdentityBackupCrypto,
 ) {
     private val createMutex = Mutex()
 
@@ -111,6 +115,58 @@ class IdentityLocalDataSource @Inject constructor(
 
         return meta.toDomain()
     }
+
+    suspend fun exportIdentityBackup(password: CharArray): ByteArray = createMutex.withLock {
+        var keyset: ByteArray? = null
+        try {
+            val identity = requireDecryptableIdentity()
+                ?: throw IdentityStorageException.Corrupted("No local identity exists to back up.")
+            keyset = secureIdentityKeyStore.exportSerializedKeyset()
+            backupCrypto.encrypt(
+                payload = IdentityBackupPayload(
+                    serializedIdentityKeyset = keyset,
+                    identityCreatedAtEpochMs = identity.createdAtEpochMs,
+                    cryptoVersion = identity.version,
+                ),
+                password = password,
+            )
+        } finally {
+            keyset?.fill(0)
+            password.fill('\u0000')
+        }
+    }
+
+    suspend fun restoreIdentityBackup(backupBytes: ByteArray, password: CharArray): UserIdentity =
+        createMutex.withLock {
+            var payload: IdentityBackupPayload? = null
+            try {
+                val existingMeta = identityDao.get()
+                val hasKeys = secureIdentityKeyStore.hasKeyMaterial()
+                if (existingMeta != null || hasKeys) {
+                    throw IdentityStorageException.InconsistentState(
+                        "Restore is only allowed before an identity exists on this device.",
+                    )
+                }
+                payload = backupCrypto.decrypt(backupBytes, password)
+                val publicKey = secureIdentityKeyStore.importSerializedKeyset(
+                    payload.serializedIdentityKeyset,
+                )
+                val identity = UserIdentity(
+                    armorChatId = ArmorChatId.derive(publicKey),
+                    publicIdentityKey = Base64Url.encode(publicKey),
+                    createdAtEpochMs = payload.identityCreatedAtEpochMs,
+                    version = payload.cryptoVersion,
+                )
+                if (identity.version <= 0) {
+                    throw IdentityBackupException.Corrupted("Backup identity version is invalid.")
+                }
+                identityDao.upsert(identity.toEntity())
+                identity
+            } finally {
+                payload?.serializedIdentityKeyset?.fill(0)
+                password.fill('\u0000')
+            }
+        }
 
     private object IdentityDiagnostics {
         fun stage(stage: String, details: String) {
