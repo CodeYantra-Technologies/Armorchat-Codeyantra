@@ -17,6 +17,7 @@ import com.codeyantra.armorchat.feature.identity.MyIdentityRoute
 import com.codeyantra.armorchat.feature.identity.RestoreIdentityRoute
 import com.codeyantra.armorchat.feature.onboarding.WelcomeScreen
 import com.codeyantra.armorchat.feature.settings.AboutScreen
+import com.codeyantra.armorchat.feature.settings.OpenSourceLicensesScreen
 import com.codeyantra.armorchat.feature.splash.SplashRoute
 import com.codeyantra.armorchat.feature.support.SupportScreen
 
@@ -97,7 +98,13 @@ fun ArmorChatNavGraph(
             MyIdentityRoute(onBack = { navController.popBackStack() })
         }
         composable(Routes.About) {
-            AboutScreen(onBack = { navController.popBackStack() })
+            AboutScreen(
+                onBack = { navController.popBackStack() },
+                onOpenSourceLicenses = { navController.navigate(Routes.OpenSourceLicenses) },
+            )
+        }
+        composable(Routes.OpenSourceLicenses) {
+            OpenSourceLicensesScreen(onBack = { navController.popBackStack() })
         }
         composable(Routes.Support) {
             SupportScreen(onBack = { navController.popBackStack() })

@@ -9,9 +9,12 @@ protocol constants, database schemas, or implementation details from:
 
 - BChat
 - Session
+- Signal / WhisperSystems trees used as implementation sources
 - the previous GPL-derived ArmorChat repository
 
-Those trees may be used later as behavioral reference only.
+Those trees may be used later as behavioral reference only. Mentions of BChat,
+Session, or GPL in project docs are **do-not-copy** clean-room warnings — not
+permission to relicense or import that code.
 
 ## Architecture
 
@@ -28,17 +31,17 @@ Transport must remain replaceable through `MessageTransport`.
 
 ## What this phase is
 
-Phase 0 is an application shell plus architectural boundaries.
+Phases 0–1C cover the application shell, local identity, encrypted backup, and
+verified contact exchange. Please do **not** submit:
 
-Please do **not** submit:
-
-- A custom encryption protocol
+- A custom encryption protocol for messaging sessions
 - Relay / WebSocket / FCM implementations
 - Calls, WebRTC, mesh, or onion routing
 - Telemetry or analytics
 - Payment integration
 - Hard-coded secrets or API keys
 - Debug backdoors
+- Copied Signal / Session / BChat source
 
 ## Code style
 
@@ -53,11 +56,14 @@ Please do **not** submit:
 Add JVM unit tests for domain logic when you change use cases or models.
 Do not add instrumented tests that require a network.
 
+## License
+
+Contributions are accepted under the **Apache License 2.0**. See `LICENSE`,
+`NOTICE`, and `THIRD_PARTY_NOTICES.md`.
+
 ## Pull requests
 
 1. Keep changes focused.
 2. Do not mix unrelated refactors with feature work.
 3. Call out any `NON-PRODUCTION` code in the description.
 4. Update `SECURITY.md` if the trust boundary changes.
-
-License selection is pending. See `LICENSE`.

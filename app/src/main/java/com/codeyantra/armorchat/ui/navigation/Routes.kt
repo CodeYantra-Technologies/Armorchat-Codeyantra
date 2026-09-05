@@ -9,5 +9,6 @@ object Routes {
     const val Home = "home"
     const val MyIdentity = "identity/mine"
     const val About = "about"
+    const val OpenSourceLicenses = "about/open_source_licenses"
     const val Support = "support"
 }
