@@ -6,4 +6,6 @@ import kotlinx.coroutines.flow.Flow
 interface SettingsRepository {
     fun observeThemeMode(): Flow<ThemeMode>
     suspend fun setThemeMode(mode: ThemeMode)
+    fun observeDeveloperMlsHarness(): Flow<Boolean>
+    suspend fun setDeveloperMlsHarness(enabled: Boolean)
 }

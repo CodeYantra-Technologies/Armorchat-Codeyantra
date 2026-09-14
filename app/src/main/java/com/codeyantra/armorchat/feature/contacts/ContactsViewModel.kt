@@ -6,6 +6,9 @@ import com.codeyantra.armorchat.domain.model.Contact
 import com.codeyantra.armorchat.domain.model.ContactExchangeResult
 import com.codeyantra.armorchat.domain.repository.ContactRepository
 import com.codeyantra.armorchat.domain.repository.ConversationRepository
+import com.codeyantra.armorchat.messaging.ChatMessagingController
+import com.codeyantra.armorchat.messaging.RouteImportResult
+import com.codeyantra.armorchat.messaging.RouteInvitation
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
@@ -18,6 +21,7 @@ import kotlinx.coroutines.launch
 
 data class ExchangeState(
     val result: ContactExchangeResult? = null,
+    val routeImport: RouteImportResult? = null,
     val busy: Boolean = false,
     val error: String? = null,
 )
@@ -26,6 +30,7 @@ data class ExchangeState(
 class ContactsViewModel @Inject constructor(
     private val repository: ContactRepository,
     private val conversationRepository: ConversationRepository,
+    private val messaging: ChatMessagingController,
 ) : ViewModel() {
     private val mutableState = MutableStateFlow(ExchangeState())
     val state = mutableState.asStateFlow()
@@ -42,16 +47,105 @@ class ContactsViewModel @Inject constructor(
         }
     }
 
+    fun retry() {
+        val raw = pendingQr
+        if (raw != null) {
+            scan(raw)
+        } else {
+            mutableState.value = ExchangeState()
+        }
+    }
+
     fun scan(raw: String) {
         if (state.value.busy) return
         pendingQr = raw
-        execute { repository.inspectQr(raw) }
+        execute {
+            val invite = com.codeyantra.armorchat.domain.identity.ContactQrV3.parse(raw)
+            if (invite != null) {
+                val redemption = messaging.resolveContactInviteV3(raw).getOrElse { err ->
+                    return@execute classifyInviteError(err)
+                }
+                val parsed = com.codeyantra.armorchat.domain.identity.ParsedContactQr.V3(redemption.bundle)
+                val result = repository.addVerifiedBundle(parsed)
+                val contact = when (result) {
+                    is ContactExchangeResult.Saved -> result.contact
+                    is ContactExchangeResult.Duplicate -> result.contact
+                    is ContactExchangeResult.HandleChanged -> result.contact
+                    else -> null
+                }
+                if (contact != null) {
+                    runCatching { messaging.importPeerContactV3(redemption) }
+                    runCatching { messaging.ensureProvisioned(contact) }
+                }
+                result
+            } else {
+                repository.inspectQr(raw)
+            }
+        }
+    }
+
+    private fun classifyInviteError(err: Throwable): ContactExchangeResult {
+        val message = err.message.orEmpty().lowercase()
+        val isNetwork = err is java.io.IOException ||
+                "network" in message || "connect" in message || "timeout" in message ||
+                "unknownhost" in message || "unreachable" in message || "failed to connect" in message ||
+                "messaging disabled" in message
+        if (isNetwork) {
+            return ContactExchangeResult.NetworkUnavailable
+        }
+
+        val isSecurity = "signature" in message || "verification" in message ||
+                "public key" in message || "id does not match" in message ||
+                "tampered" in message || "bound to" in message || "not an armorchat bundle" in message
+        if (isSecurity) {
+            return ContactExchangeResult.SecurityVerificationFailed
+        }
+
+        if ("expired" in message) return ContactExchangeResult.InviteExpired
+        if ("unknown" in message || "not found" in message) return ContactExchangeResult.InviteUnknown
+        if ("revoked" in message) return ContactExchangeResult.InviteUnavailable
+
+        return ContactExchangeResult.InviteUnavailable
     }
 
     fun save(name: String) {
         val raw = pendingQr ?: return
         if (state.value.busy) return
-        execute { repository.addQr(raw, name) }
+        execute {
+            val result = repository.addQr(raw, name)
+            val contact = when (result) {
+                is ContactExchangeResult.Saved -> result.contact
+                is ContactExchangeResult.Duplicate -> result.contact
+                is ContactExchangeResult.HandleChanged -> result.contact
+                else -> null
+            }
+            val parsed = when (result) {
+                is ContactExchangeResult.Saved -> result.parsed
+                is ContactExchangeResult.Duplicate -> result.parsed
+                is ContactExchangeResult.HandleChanged -> result.parsed
+                else -> null
+            }
+            if (contact != null) {
+                runCatching {
+                    when (parsed) {
+                        is com.codeyantra.armorchat.domain.identity.ParsedContactQr.V3 ->
+                            messaging.resolveContactInviteV3(raw).getOrNull()?.let {
+                                messaging.importPeerContactV3(it)
+                            }
+                        is com.codeyantra.armorchat.domain.identity.ParsedContactQr.V2 ->
+                            messaging.importPeerContactV2(parsed.payload)
+                        else -> messaging.ensureProvisioned(contact)
+                    }
+                }
+            }
+            result
+        }
+    }
+
+    fun removeContact(id: String) {
+        viewModelScope.launch {
+            runCatching { repository.deleteContact(id) }
+        }
     }
 
     fun openConversation(contact: Contact, onReady: (conversationId: String) -> Unit) {

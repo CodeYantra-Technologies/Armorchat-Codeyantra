@@ -1,0 +1,847 @@
+package com.codeyantra.armorchat.messaging
+
+import com.codeyantra.armorchat.core.network.ImmutableRelayEnvelope
+import com.codeyantra.armorchat.core.network.LeasedRelayEnvelope
+import com.codeyantra.armorchat.core.network.RelayQueueState
+import com.codeyantra.armorchat.core.network.RelaySubmitResult
+import com.codeyantra.armorchat.domain.identity.Base64Url
+import com.codeyantra.armorchat.domain.model.MessageStatus
+import java.security.SecureRandom
+
+/**
+ * Test-only authenticated send/receive with receipts and exact-ciphertext retry.
+ * Not CryptoEngine. Not production chat send.
+ */
+class ReceiptMessagingPeer(
+    val peer: TwoPhonePeer,
+    private val nowSeconds: () -> Long,
+    private val jitter: (Long) -> Long = { cap ->
+        if (cap <= 0L) 0L else SecureRandom().nextInt(cap.toInt() + 1).toLong()
+    },
+    private val randomBytes: (Int) -> ByteArray = { n -> ByteArray(n).also { SecureRandom().nextBytes(it) } },
+    var readReceiptsEnabled: Boolean = true,
+) {
+    val store = LocalMessagingStore()
+    var submitInterceptor: ((ImmutableRelayEnvelope) -> RelaySubmitResult?)? = null
+    var diagnostics = MessagingDiagnostics()
+        private set
+
+    fun status(messageId: String): MessageStatus =
+        store.text(messageId)?.progress?.status ?: error("unknown message")
+
+    fun lastTextId(): String =
+        store.texts().maxByOrNull { it.createdAt }?.messageId ?: error("no text")
+
+    fun lastAcceptedTextId(): String =
+        store.inbounds().lastOrNull { it.kind == InnerKind.TEXT && it.accepted }?.messageId
+            ?: error("no accepted text")
+
+    fun acceptedPlaintexts(): List<String> =
+        store.inbounds().filter { it.kind == InnerKind.TEXT && it.accepted }.mapNotNull { it.text }
+
+    fun outbound(messageId: String): OutboundRecord = store.text(messageId) ?: error("unknown message")
+
+    suspend fun sendSetupRoute(): Boolean {
+        if (peer.setupRouteSent) return true
+        val recipient = peer.pinnedPeer ?: return false
+        val route = peer.peerRoute ?: return false
+        val now = nowSeconds()
+        val session = peer.sessionInfo()
+        val inner = InnerRecord(
+            kind = InnerKind.SETUP_ROUTE,
+            messageId = Base64Url.encode(randomBytes(16)),
+            sessionId = session.sessionId,
+            senderDeviceId = peer.deviceId,
+            senderGeneration = peer.generation,
+            recipientDeviceId = route.deviceId,
+            recipientGeneration = route.generation,
+            senderIdentityKey = peer.pin,
+            recipientIdentityKey = route.inviterPin,
+            recipientMailbox = route.mailboxId,
+            createdAt = now,
+            expiresAt = now + OutboxPolicy.TTL_SECONDS,
+            epoch = session.epoch,
+            body = InnerBody.SetupRoute(peer.exportPeerRoute(recipient).toQr()),
+        )
+        val encoded = try {
+            inner.encode()
+        } catch (_: Exception) {
+            return false
+        }
+        val enc = peer.encryptRaw(encoded)
+        val env = peer.makeApplicationEnvelope(enc.ciphertextB64, inner.messageId, inner.expiresAt)
+        val accepted = peer.submitEnvelopeToPeer(env) is RelaySubmitResult.Accepted
+        peer.diagnostic(SharedSessionDiagnostic.Stage.setup_route_sent, accepted)
+        if (accepted) peer.setupRouteSent = true
+        return accepted
+    }
+
+    suspend fun sendText(text: String, replyTo: ReplyMetadata? = null, acknowledgeRelay: Boolean = true): OutboundRecord {
+        val route = peer.peerRoute ?: error("peer route required")
+        val now = nowSeconds()
+        val messageId = Base64Url.encode(randomBytes(16))
+        val expiresAt = now + OutboxPolicy.TTL_SECONDS
+        val queued = store.commit {
+            val record = OutboundRecord(
+                messageId = messageId,
+                kind = InnerKind.TEXT,
+                expiresAt = expiresAt,
+                createdAt = now,
+                peerIdentity = route.inviterPin,
+                peerDeviceId = route.deviceId,
+                peerGeneration = route.generation,
+                localPlaintext = text,
+                clientSequence = takeSequence(),
+                progress = MessageProgress.initial(),
+                replyTo = replyTo,
+            )
+            putText(record)
+            record
+        }
+        encryptText(queued)
+        return submitOutbound(messageId, isReceipt = false, acknowledgeRelay = acknowledgeRelay)
+    }
+
+    suspend fun sendAttachment(
+        metadataJson: String,
+        replyTo: ReplyMetadata? = null,
+        acknowledgeRelay: Boolean = true,
+    ): OutboundRecord {
+        val route = peer.peerRoute ?: error("peer route required")
+        val now = nowSeconds()
+        val messageId = Base64Url.encode(randomBytes(16))
+        val expiresAt = now + OutboxPolicy.TTL_SECONDS
+        val queued = store.commit {
+            val record = OutboundRecord(
+                messageId = messageId,
+                kind = InnerKind.ATTACHMENT,
+                expiresAt = expiresAt,
+                createdAt = now,
+                peerIdentity = route.inviterPin,
+                peerDeviceId = route.deviceId,
+                peerGeneration = route.generation,
+                localPlaintext = metadataJson,
+                clientSequence = takeSequence(),
+                progress = MessageProgress.initial(),
+                replyTo = replyTo,
+            )
+            putText(record)
+            record
+        }
+        encryptText(queued)
+        return submitOutbound(messageId, isReceipt = false, acknowledgeRelay = acknowledgeRelay)
+    }
+
+    suspend fun flushOutbox() {
+        val now = nowSeconds()
+        val receipts = store.receipts().filter { due(it, now) }
+            .sortedBy { it.createdAt }
+        val texts = store.texts().filter { due(it, now) }
+            .sortedBy { it.createdAt }
+        for (item in receipts) {
+            if (item.envelope == null) encryptReceipt(item)
+            submitOutbound(item.messageId, isReceipt = true, acknowledgeRelay = true)
+        }
+        for (item in texts) {
+            if (item.envelope == null) encryptText(item)
+            submitOutbound(item.messageId, isReceipt = false, acknowledgeRelay = true)
+        }
+    }
+
+    suspend fun receiveAll(): List<String> {
+        val before = acceptedPlaintexts()
+        val items = peer.fetchLeased()
+        for (item in items) {
+            if (item.payloadType == ImmutableRelayEnvelope.PAYLOAD_HANDSHAKE) continue
+            processLeased(item, consumeOnSuccess = true)
+        }
+        flushOutbox()
+        return acceptedPlaintexts() - before.toSet()
+    }
+
+    fun inbound(messageId: String): InboundRecord? = store.inbound(messageId)
+
+    fun rememberInbound(record: InboundRecord) {
+        store.commit {
+            if (inbound(record.messageId) == null) {
+                putInbound(record.copy(accepted = true))
+            }
+        }
+    }
+
+    fun markOpened(messageId: String) {
+        val inbound = store.inbound(messageId) ?: throw MessagingProtocolException("unknown inbound")
+        if (!inbound.accepted || !inbound.kind.isUserMessage) {
+            throw MessagingProtocolException("read only for accepted user message")
+        }
+        if (!readReceiptsEnabled) return
+        if (inbound.displayed) return
+        store.commit {
+            val current = inbound(messageId) ?: throw MessagingProtocolException("unknown inbound")
+            if (!current.accepted) throw MessagingProtocolException("not accepted")
+            putInbound(current.copy(displayed = true))
+            if (receipts().none { it.target?.targetMessageId == messageId && it.kind == InnerKind.READ }) {
+                putReceipt(newReceiptIntent(current, InnerKind.READ, nowSeconds()))
+            }
+        }
+    }
+
+    fun queueDeliveryReceipt(targetMessageId: String) {
+        val inbound = store.inbound(targetMessageId)
+        if (inbound == null || !inbound.accepted || !inbound.kind.isUserMessage) {
+            throw MessagingProtocolException("receipt before local durable accept")
+        }
+        store.commit {
+            val current = inbound(targetMessageId)
+            if (current == null || !current.accepted) {
+                throw MessagingProtocolException("receipt before local durable accept")
+            }
+            if (receipts().none { it.target?.targetMessageId == targetMessageId && it.kind == InnerKind.DELIVERY }) {
+                putReceipt(newReceiptIntent(current, InnerKind.DELIVERY, nowSeconds()))
+            }
+        }
+    }
+
+    suspend fun processLeased(
+        item: LeasedRelayEnvelope,
+        consumeOnSuccess: Boolean = true,
+        persistInbound: (suspend (InboundRecord) -> Unit)? = null,
+    ) {
+        if (item.payloadType != ImmutableRelayEnvelope.PAYLOAD_APPLICATION) {
+            throw MessagingProtocolException("expected application")
+        }
+        val session = peer.sessionInfo()
+        val digest = libraryCiphertextSha256(item.encryptedPayloadB64)
+        val peerIdentity = peer.peerRoute?.inviterPin ?: peer.pinnedPeer
+            ?: error("pinned peer required")
+        val peerGeneration = peer.peerRoute?.generation ?: 1L
+        val seenKey = LocalMessagingStore.seenKey(peerIdentity, peerGeneration, session.sessionId, item.messageId)
+        val existing = store.seen(seenKey)
+        if (existing != null) {
+            if (existing.digest != digest) throw MessagingProtocolException("duplicate id digest mismatch")
+            if (existing.accepted) {
+                val existingInbound = store.inbound(item.messageId)
+                if (existingInbound != null && persistInbound != null) {
+                    persistInbound(existingInbound)
+                }
+                if (consumeOnSuccess) peer.consumeLeased(item)
+            }
+            return
+        }
+        val mlsBefore = peer.snapshot()
+        val decrypted = try {
+            peer.decryptRaw(item.encryptedPayloadB64)
+        } catch (e: Exception) {
+            throw MessagingProtocolException("unauthenticated ciphertext")
+        }
+        val inner = try {
+            val parsed = InnerRecord.parse(decrypted.plaintext)
+            if (parsed.kind == InnerKind.SETUP_ROUTE) peer.diagnostic(SharedSessionDiagnostic.Stage.setup_route_received)
+            bindInbound(parsed, item, decrypted, digest)
+            if (parsed.kind == InnerKind.DELIVERY || parsed.kind == InnerKind.READ) {
+                previewReceipt(parsed)
+            }
+            if (parsed.kind == InnerKind.SETUP_ROUTE) {
+                previewSetupRoute(parsed)
+            }
+            parsed
+        } catch (e: Exception) {
+            store.commit {
+                putSeen(seenKey, SeenEnvelope(digest, accepted = false))
+            }
+            if (consumeOnSuccess) runCatching { peer.consumeLeased(item) }
+            throw if (e is MessagingProtocolException) e else MessagingProtocolException("inner rejected")
+        }
+        var pendingRoute: String? = null
+        val inboundRecord: InboundRecord = try {
+            store.commit {
+                putSeen(seenKey, SeenEnvelope(digest, accepted = true))
+                val rec: InboundRecord = when (inner.kind) {
+                    InnerKind.TEXT -> {
+                        acceptText(inner, digest)
+                        InboundRecord(
+                            messageId = inner.messageId,
+                            sessionId = inner.sessionId,
+                            epoch = inner.epoch,
+                            ciphertextSha256 = digest,
+                            peerIdentity = inner.senderIdentityKey,
+                            peerGeneration = inner.senderGeneration,
+                            peerDeviceId = inner.senderDeviceId,
+                            kind = inner.kind,
+                            text = (inner.body as? InnerBody.Text)?.text,
+                            accepted = true,
+                        )
+                    }
+                    InnerKind.ATTACHMENT -> {
+                        acceptAttachment(inner, digest)
+                        val body = inner.body as InnerBody.Attachment
+                        InboundRecord(
+                            messageId = inner.messageId,
+                            sessionId = inner.sessionId,
+                            epoch = inner.epoch,
+                            ciphertextSha256 = digest,
+                            peerIdentity = inner.senderIdentityKey,
+                            peerGeneration = inner.senderGeneration,
+                            peerDeviceId = inner.senderDeviceId,
+                            kind = inner.kind,
+                            text = com.codeyantra.armorchat.domain.model.AttachmentMetadata.fromInner(body).toJson(),
+                            accepted = true,
+                        )
+                    }
+                    InnerKind.DELIVERY -> {
+                        applyReceipt(inner, expected = InnerKind.DELIVERY, digest = digest)
+                        InboundRecord(
+                            messageId = inner.messageId,
+                            sessionId = inner.sessionId,
+                            epoch = inner.epoch,
+                            ciphertextSha256 = digest,
+                            peerIdentity = inner.senderIdentityKey,
+                            peerGeneration = inner.senderGeneration,
+                            peerDeviceId = inner.senderDeviceId,
+                            kind = inner.kind,
+                            text = null,
+                            accepted = true,
+                        )
+                    }
+                    InnerKind.READ -> {
+                        applyReceipt(inner, expected = InnerKind.READ, digest = digest)
+                        InboundRecord(
+                            messageId = inner.messageId,
+                            sessionId = inner.sessionId,
+                            epoch = inner.epoch,
+                            ciphertextSha256 = digest,
+                            peerIdentity = inner.senderIdentityKey,
+                            peerGeneration = inner.senderGeneration,
+                            peerDeviceId = inner.senderDeviceId,
+                            kind = inner.kind,
+                            text = null,
+                            accepted = true,
+                        )
+                    }
+                    InnerKind.SETUP_ROUTE -> {
+                        pendingRoute = acceptSetupRoute(inner)
+                        InboundRecord(
+                            messageId = inner.messageId,
+                            sessionId = inner.sessionId,
+                            epoch = inner.epoch,
+                            ciphertextSha256 = digest,
+                            peerIdentity = inner.senderIdentityKey,
+                            peerGeneration = inner.senderGeneration,
+                            peerDeviceId = inner.senderDeviceId,
+                            kind = inner.kind,
+                            text = null,
+                            accepted = true,
+                        )
+                    }
+                }
+                rec
+            }
+        } catch (e: Exception) {
+            peer.restore(mlsBefore)
+            throw e
+        }
+
+        // STEP 5: Durable local persistence BEFORE relay consume!
+        if (persistInbound != null) {
+            try {
+                persistInbound(inboundRecord)
+            } catch (e: Exception) {
+                peer.restore(mlsBefore)
+                store.commit { removeSeen(seenKey) }
+                throw e
+            }
+        }
+
+        pendingRoute?.let { json ->
+            val expected = peer.pinnedPeer ?: throw MessagingProtocolException("pinned peer required")
+            peer.importRoute(json, expected, freshKp = false)
+        }
+        if (inner.kind == InnerKind.SETUP_ROUTE) {
+            peer.confirmIfMatchingSession(inner.sessionId)
+        }
+
+        if (inner.kind.isUserMessage && readReceiptsEnabled) {
+            runCatching { queueDeliveryReceipt(inner.messageId) }
+        }
+
+        // STEP 7: Relay envelope consume / ack
+        if (consumeOnSuccess) {
+            peer.consumeLeased(item)
+        }
+        if (consumeOnSuccess) peer.consumeLeased(item)
+        diagnostics = diagnostics.copy(
+            lastMessageId = inner.messageId,
+            epoch = inner.epoch,
+            relayState = "fetched",
+            note = inner.kind.wire,
+        )
+    }
+
+    suspend fun submitInner(record: InnerRecord): ImmutableRelayEnvelope {
+        val enc = peer.encryptRaw(record.encode())
+        val env = peer.makeApplicationEnvelope(enc.ciphertextB64, record.messageId, record.expiresAt)
+        val result = submit(env)
+        if (result !is RelaySubmitResult.Accepted) error("adversarial submit failed: $result")
+        return env
+    }
+
+    fun receiptTemplate(kind: InnerKind, target: OutboundRecord, mutator: (InnerRecord) -> InnerRecord = { it }): InnerRecord {
+        require(kind == InnerKind.DELIVERY || kind == InnerKind.READ)
+        val route = peer.peerRoute ?: error("peer route required")
+        val now = nowSeconds()
+        val session = peer.sessionInfo()
+        val receipt = InnerBody.Receipt(
+            targetMessageId = target.messageId,
+            targetSessionId = target.sessionId ?: session.sessionId,
+            targetCiphertextSha256 = target.ciphertextSha256 ?: error("no digest"),
+            targetEpoch = target.epoch ?: 0L,
+            eventAt = now,
+        )
+        val record = InnerRecord(
+            kind = kind,
+            messageId = Base64Url.encode(randomBytes(16)),
+            sessionId = session.sessionId,
+            senderDeviceId = peer.deviceId,
+            senderGeneration = peer.generation,
+            recipientDeviceId = route.deviceId,
+            recipientGeneration = route.generation,
+            senderIdentityKey = peer.pin,
+            recipientIdentityKey = route.inviterPin,
+            recipientMailbox = route.mailboxId,
+            createdAt = now,
+            expiresAt = now + OutboxPolicy.TTL_SECONDS,
+            epoch = session.epoch,
+            body = receipt,
+        )
+        return mutator(record)
+    }
+
+    fun applyRelayQueueHint(messageId: String, state: RelayQueueState): MessageStatus {
+        val current = store.text(messageId) ?: error("unknown message")
+        val next = store.commit {
+            val rec = text(messageId) ?: error("unknown message")
+            val updated = rec.copy(progress = rec.progress.onRelayQueueHint(state))
+            putText(updated)
+            updated
+        }
+        return next.progress.status
+    }
+
+    fun refuseRelayStatusWord(word: String) = MessageProgress.refuseRelayStatusWord(word)
+
+    fun forceFail(messageId: String, now: Long = nowSeconds(), ambiguous: Boolean = true) {
+        store.commit {
+            val rec = text(messageId) ?: error("unknown message")
+            putText(
+                rec.copy(
+                    progress = rec.progress.onFailed(
+                        FailureNote("retry exhausted", retryable = false, lastAttemptAt = now, ambiguousAcceptance = ambiguous),
+                    ),
+                ),
+            )
+        }
+    }
+
+    suspend fun resubmitExact(messageId: String): RelaySubmitResult {
+        val rec = store.text(messageId) ?: error("unknown message")
+        val env = rec.envelope ?: error("no committed ciphertext")
+        return submit(env)
+    }
+
+    private fun due(record: OutboundRecord, now: Long): Boolean {
+        if (record.progress.evidence != DeliveryEvidence.NONE) return false
+        if (record.progress.attempt == AttemptState.FAILED) return false
+        if (record.progress.retryAtEpochSeconds > now) return false
+        return true
+    }
+
+    private fun encryptText(record: OutboundRecord) {
+        val route = peer.peerRoute ?: error("peer route required")
+        store.commit {
+            val current = text(record.messageId) ?: error("unknown message")
+            putText(current.copy(progress = current.progress.onEncrypting()))
+        }
+        val mlsBefore = peer.snapshot()
+        try {
+            val session = peer.sessionInfo()
+            val body = when (record.kind) {
+                InnerKind.TEXT -> InnerBody.Text(
+                    record.localPlaintext ?: error("text"),
+                    record.clientSequence ?: error("seq"),
+                    record.replyTo,
+                )
+                InnerKind.ATTACHMENT -> {
+                    val meta = com.codeyantra.armorchat.domain.model.AttachmentMetadata.parseOrNull(
+                        record.localPlaintext,
+                    ) ?: error("attachment")
+                    val metaWithReply = if (record.replyTo != null) meta.copy(replyTo = record.replyTo) else meta
+                    metaWithReply.toInnerBody(record.clientSequence ?: error("seq"))
+                }
+                else -> error("not a user message")
+            }
+            val inner = InnerRecord(
+                kind = record.kind,
+                messageId = record.messageId,
+                sessionId = session.sessionId,
+                senderDeviceId = peer.deviceId,
+                senderGeneration = peer.generation,
+                recipientDeviceId = route.deviceId,
+                recipientGeneration = route.generation,
+                senderIdentityKey = peer.pin,
+                recipientIdentityKey = route.inviterPin,
+                recipientMailbox = route.mailboxId,
+                createdAt = record.createdAt,
+                expiresAt = record.expiresAt,
+                epoch = session.epoch,
+                body = body,
+            )
+            val enc = peer.encryptRaw(inner.encode())
+            require(enc.ciphertextB64 != inner.encode()) { "plaintext must not leave the device" }
+            val env = peer.makeApplicationEnvelope(enc.ciphertextB64, record.messageId, record.expiresAt)
+            store.commit {
+                val current = text(record.messageId) ?: error("unknown message")
+                putText(
+                    current.copy(
+                        sessionId = enc.sessionId,
+                        epoch = enc.epoch,
+                        ciphertextB64 = enc.ciphertextB64,
+                        ciphertextSha256 = libraryCiphertextSha256(enc.ciphertextB64),
+                        envelope = env,
+                        envelopeCanonical = env.canonicalJson(),
+                        progress = current.progress.onSending(),
+                    ),
+                )
+            }
+            diagnostics = diagnostics.copy(lastMessageId = record.messageId, epoch = enc.epoch, note = "encrypted")
+        } catch (e: Exception) {
+            peer.restore(mlsBefore)
+            store.commit {
+                val current = text(record.messageId) ?: return@commit
+                if (current.envelope == null && current.progress.attempt == AttemptState.ENCRYPTING) {
+                    putText(current.copy(progress = current.progress.onRetryWait(nowSeconds(), current.progress.attemptCount)))
+                }
+            }
+            throw e
+        }
+    }
+
+    private fun encryptReceipt(record: OutboundRecord) {
+        val target = record.target ?: error("receipt target")
+        store.commit {
+            val current = receipt(record.messageId) ?: error("unknown receipt")
+            putReceipt(current.copy(progress = current.progress.onEncrypting()))
+        }
+        val mlsBefore = peer.snapshot()
+        try {
+            val route = peer.peerRoute ?: error("peer route required")
+            val session = peer.sessionInfo()
+            val inner = InnerRecord(
+                kind = record.kind,
+                messageId = record.messageId,
+                sessionId = session.sessionId,
+                senderDeviceId = peer.deviceId,
+                senderGeneration = peer.generation,
+                recipientDeviceId = route.deviceId,
+                recipientGeneration = route.generation,
+                senderIdentityKey = peer.pin,
+                recipientIdentityKey = route.inviterPin,
+                recipientMailbox = route.mailboxId,
+                createdAt = record.createdAt,
+                expiresAt = record.expiresAt,
+                epoch = session.epoch,
+                body = target,
+            )
+            val enc = peer.encryptRaw(inner.encode())
+            val env = peer.makeApplicationEnvelope(enc.ciphertextB64, record.messageId, record.expiresAt)
+            store.commit {
+                val current = receipt(record.messageId) ?: error("unknown receipt")
+                putReceipt(
+                    current.copy(
+                        sessionId = enc.sessionId,
+                        epoch = enc.epoch,
+                        ciphertextB64 = enc.ciphertextB64,
+                        ciphertextSha256 = libraryCiphertextSha256(enc.ciphertextB64),
+                        envelope = env,
+                        envelopeCanonical = env.canonicalJson(),
+                        progress = current.progress.onSending(),
+                    ),
+                )
+            }
+        } catch (e: Exception) {
+            peer.restore(mlsBefore)
+            throw e
+        }
+    }
+
+    private suspend fun submitOutbound(
+        messageId: String,
+        isReceipt: Boolean,
+        acknowledgeRelay: Boolean,
+    ): OutboundRecord {
+        val rec = if (isReceipt) store.receipt(messageId) else store.text(messageId)
+        rec ?: error("unknown outbox item")
+        val env = rec.envelope ?: error("ciphertext not committed")
+        if (rec.envelopeCanonical != env.canonicalJson()) {
+            throw MessagingProtocolException("outbox canonical mismatch")
+        }
+        val now = nowSeconds()
+        if (!OutboxPolicy.stillLive(rec.expiresAt, now)) {
+            return fail(messageId, isReceipt, "expired", retryable = false, ambiguous = rec.progress.evidence == DeliveryEvidence.NONE)
+        }
+        val result = submit(env)
+        val outcome = OutboxPolicy.classify(result)
+        if (outcome != OutboxPolicy.SubmitOutcome.ACCEPTED) {
+            val reason = (result as? RelaySubmitResult.Rejected)?.reason ?: outcome.name
+            SafeLog.event("envelope_submit_retry", "outcome=$outcome reason=$reason")
+        }
+        if (outcome == OutboxPolicy.SubmitOutcome.ACCEPTED && result is RelaySubmitResult.Accepted) {
+            if (result.messageId != env.messageId || result.expiresAt != env.expiresAt) {
+                throw MessagingProtocolException("acceptance identity mismatch")
+            }
+            if (!acknowledgeRelay) {
+                return store.commit {
+                    val current = if (isReceipt) receipt(messageId) else text(messageId)
+                    current ?: error("unknown outbox item")
+                    val updated = current.copy(
+                        progress = current.progress.onRetryWait(now, current.progress.attemptCount + 1),
+                    )
+                    if (isReceipt) putReceipt(updated) else putText(updated)
+                    updated
+                }
+            }
+            return store.commit {
+                val current = if (isReceipt) receipt(messageId) else text(messageId)
+                current ?: error("unknown outbox item")
+                val updated = current.copy(progress = current.progress.onRelayAccepted())
+                if (isReceipt) putReceipt(updated) else putText(updated)
+                diagnostics = diagnostics.copy(
+                    lastMessageId = env.messageId,
+                    relayState = result.state.name.lowercase(),
+                    note = if (isReceipt) "receipt accepted" else "application accepted",
+                )
+                updated
+            }
+        }
+        val burns = OutboxPolicy.burnsAttempt(outcome)
+        val attempts = rec.progress.attemptCount + if (burns) 1 else 0
+        if (outcome == OutboxPolicy.SubmitOutcome.PERMANENT || attempts >= OutboxPolicy.MAX_AUTOMATIC_ATTEMPTS) {
+            return fail(
+                messageId,
+                isReceipt,
+                reason = if (outcome == OutboxPolicy.SubmitOutcome.PERMANENT) "permanent" else "retry exhausted",
+                retryable = outcome != OutboxPolicy.SubmitOutcome.PERMANENT,
+                ambiguous = true,
+            )
+        }
+        val retryAt = OutboxPolicy.nextRetryAt(now, retryIndex = attempts, jitter = jitter)
+        return store.commit {
+            val current = if (isReceipt) receipt(messageId) else text(messageId)
+            current ?: error("unknown outbox item")
+            val updated = current.copy(progress = current.progress.onRetryWait(retryAt, attempts))
+            if (isReceipt) putReceipt(updated) else putText(updated)
+            updated
+        }
+    }
+
+    private fun fail(
+        messageId: String,
+        isReceipt: Boolean,
+        reason: String,
+        retryable: Boolean,
+        ambiguous: Boolean,
+    ): OutboundRecord = store.commit {
+        val current = if (isReceipt) receipt(messageId) else text(messageId)
+        current ?: error("unknown outbox item")
+        val updated = current.copy(
+            progress = current.progress.onFailed(
+                FailureNote(reason, retryable, nowSeconds(), ambiguous),
+            ),
+        )
+        if (isReceipt) putReceipt(updated) else putText(updated)
+        updated
+    }
+
+    private suspend fun submit(env: ImmutableRelayEnvelope): RelaySubmitResult {
+        submitInterceptor?.invoke(env)?.let { return it }
+        return peer.submitEnvelopeToPeer(env)
+    }
+
+    private fun LocalMessagingStore.MutableStore.acceptSetupRoute(inner: InnerRecord): String {
+        val json = (inner.body as? InnerBody.SetupRoute)?.routeJson
+            ?: throw MessagingProtocolException("setup route body")
+        putInbound(
+            InboundRecord(
+                messageId = inner.messageId,
+                sessionId = inner.sessionId,
+                epoch = inner.epoch,
+                ciphertextSha256 = "",
+                peerIdentity = inner.senderIdentityKey,
+                peerGeneration = inner.senderGeneration,
+                peerDeviceId = inner.senderDeviceId,
+                kind = InnerKind.SETUP_ROUTE,
+                accepted = true,
+            ),
+        )
+        return json
+    }
+
+    private fun previewSetupRoute(inner: InnerRecord) {
+        val json = (inner.body as? InnerBody.SetupRoute)?.routeJson
+            ?: throw MessagingProtocolException("setup route body")
+        val expected = peer.pinnedPeer ?: throw MessagingProtocolException("pinned peer required")
+        RouteInvitation.parse(json, peer.pin, nowSeconds()).also { parsed ->
+            if (parsed.inviterPin != expected) throw MessagingProtocolException("setup route pin")
+        }
+    }
+
+    private fun LocalMessagingStore.MutableStore.acceptText(inner: InnerRecord, digest: String) {
+        val bodyText = inner.body as? InnerBody.Text ?: throw MessagingProtocolException("text body")
+        val inbound = InboundRecord(
+            messageId = inner.messageId,
+            sessionId = inner.sessionId,
+            epoch = inner.epoch,
+            ciphertextSha256 = digest,
+            peerIdentity = inner.senderIdentityKey,
+            peerGeneration = inner.senderGeneration,
+            peerDeviceId = inner.senderDeviceId,
+            kind = InnerKind.TEXT,
+            text = bodyText.text,
+            accepted = true,
+            clientSequence = bodyText.clientSequence,
+            replyTo = bodyText.replyTo,
+        )
+        putInbound(inbound)
+        putReceipt(newReceiptIntent(inbound, InnerKind.DELIVERY, nowSeconds()))
+    }
+
+    private fun LocalMessagingStore.MutableStore.acceptAttachment(inner: InnerRecord, digest: String) {
+        val body = inner.body as? InnerBody.Attachment ?: throw MessagingProtocolException("attachment body")
+        val meta = com.codeyantra.armorchat.domain.model.AttachmentMetadata.fromInner(body)
+        val inbound = InboundRecord(
+            messageId = inner.messageId,
+            sessionId = inner.sessionId,
+            epoch = inner.epoch,
+            ciphertextSha256 = digest,
+            peerIdentity = inner.senderIdentityKey,
+            peerGeneration = inner.senderGeneration,
+            peerDeviceId = inner.senderDeviceId,
+            kind = InnerKind.ATTACHMENT,
+            text = meta.toJson(),
+            accepted = true,
+            clientSequence = body.clientSequence,
+            replyTo = body.replyTo,
+        )
+        putInbound(inbound)
+        putReceipt(newReceiptIntent(inbound, InnerKind.DELIVERY, nowSeconds()))
+    }
+
+    private fun LocalMessagingStore.MutableStore.applyReceipt(
+        inner: InnerRecord,
+        expected: InnerKind,
+        digest: String,
+    ) {
+        if (inner.kind != expected) throw MessagingProtocolException("receipt kind")
+        val body = inner.body as? InnerBody.Receipt ?: throw MessagingProtocolException("receipt body")
+        val target = text(body.targetMessageId) ?: throw MessagingProtocolException("orphan receipt")
+        if (!target.kind.isUserMessage) throw MessagingProtocolException("receipt of receipt")
+        if (target.sessionId != body.targetSessionId) throw MessagingProtocolException("wrong session")
+        if (target.ciphertextSha256 != body.targetCiphertextSha256) {
+            throw MessagingProtocolException("wrong ciphertext digest")
+        }
+        if (target.epoch != body.targetEpoch) throw MessagingProtocolException("stale epoch")
+        if (inner.sessionId != target.sessionId) throw MessagingProtocolException("wrong session")
+        if (target.peerIdentity != inner.senderIdentityKey) throw MessagingProtocolException("cross-contact")
+        val updated = target.copy(
+            progress = if (expected == InnerKind.READ) {
+                target.progress.onValidatedReadReceipt()
+            } else {
+                target.progress.onValidatedDeliveryReceipt()
+            },
+        )
+        putText(updated)
+        putInbound(
+            InboundRecord(
+                messageId = inner.messageId,
+                sessionId = inner.sessionId,
+                epoch = inner.epoch,
+                ciphertextSha256 = digest,
+                peerIdentity = inner.senderIdentityKey,
+                peerGeneration = inner.senderGeneration,
+                peerDeviceId = inner.senderDeviceId,
+                kind = expected,
+                accepted = true,
+            ),
+        )
+    }
+
+    private fun bindInbound(
+        inner: InnerRecord,
+        item: LeasedRelayEnvelope,
+        decrypted: MlsAppResult,
+        digest: String,
+    ) {
+        unused(digest)
+        if (inner.messageId != item.messageId) throw MessagingProtocolException("outer message id")
+        if (inner.recipientMailbox != peer.ownMailboxId()) throw MessagingProtocolException("mailbox")
+        if (inner.expiresAt != item.expiresAt) throw MessagingProtocolException("expiry")
+        if (inner.sessionId != decrypted.sessionId) throw MessagingProtocolException("session")
+        if (inner.epoch != decrypted.epoch) throw MessagingProtocolException("stale epoch")
+        if (inner.recipientIdentityKey != peer.pin) throw MessagingProtocolException("recipient pin")
+        val route = peer.peerRoute
+        val expectedSender = route?.inviterPin ?: peer.pinnedPeer
+            ?: throw MessagingProtocolException("pinned peer required")
+        if (inner.senderIdentityKey != expectedSender) throw MessagingProtocolException("sender pin")
+        if (inner.kind == InnerKind.SETUP_ROUTE) {
+            // A setup_route's entire purpose is to refresh routing/device info the
+            // sender may have cached as stale, so it must not be rejected merely
+            // because it doesn't yet know our current device id/generation.
+            return
+        }
+        if (inner.recipientDeviceId != peer.deviceId) throw MessagingProtocolException("recipient device")
+        if (inner.recipientGeneration != peer.generation) throw MessagingProtocolException("recipient generation")
+        val bound = route ?: throw MessagingProtocolException("peer route required")
+        if (inner.senderDeviceId != bound.deviceId) throw MessagingProtocolException("sender device")
+        if (inner.senderGeneration != bound.generation) throw MessagingProtocolException("sender generation")
+        if (inner.kind == InnerKind.DELIVERY || inner.kind == InnerKind.READ) {
+            val body = inner.body as InnerBody.Receipt
+            if (body.targetSessionId != inner.sessionId) throw MessagingProtocolException("receipt session")
+        }
+    }
+
+    private fun previewReceipt(inner: InnerRecord) {
+        val body = inner.body as? InnerBody.Receipt ?: throw MessagingProtocolException("receipt body")
+        val target = store.text(body.targetMessageId) ?: throw MessagingProtocolException("orphan receipt")
+        if (!target.kind.isUserMessage) throw MessagingProtocolException("receipt of receipt")
+        if (target.sessionId != body.targetSessionId || inner.sessionId != target.sessionId) {
+            throw MessagingProtocolException("wrong session")
+        }
+        if (target.ciphertextSha256 != body.targetCiphertextSha256) {
+            throw MessagingProtocolException("wrong ciphertext digest")
+        }
+        if (target.epoch != body.targetEpoch) throw MessagingProtocolException("stale epoch")
+        if (target.peerIdentity != inner.senderIdentityKey) throw MessagingProtocolException("cross-contact")
+    }
+
+    private fun newReceiptIntent(inbound: InboundRecord, kind: InnerKind, now: Long): OutboundRecord {
+        val route = peer.peerRoute ?: error("peer route required")
+        return OutboundRecord(
+            messageId = Base64Url.encode(randomBytes(16)),
+            kind = kind,
+            expiresAt = now + OutboxPolicy.TTL_SECONDS,
+            createdAt = now,
+            peerIdentity = route.inviterPin,
+            peerDeviceId = route.deviceId,
+            peerGeneration = route.generation,
+            progress = MessageProgress.initial(),
+            target = InnerBody.Receipt(
+                targetMessageId = inbound.messageId,
+                targetSessionId = inbound.sessionId,
+                targetCiphertextSha256 = inbound.ciphertextSha256,
+                targetEpoch = inbound.epoch,
+                eventAt = now,
+            ),
+        )
+    }
+
+    private fun unused(value: Any?) = Unit
+}

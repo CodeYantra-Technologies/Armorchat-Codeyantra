@@ -20,4 +20,7 @@ interface IdentityDao {
 
     @Query("DELETE FROM identities")
     suspend fun clear()
+
+    @Query("UPDATE identities SET displayName = :displayName, handle = :handle")
+    suspend fun updateProfile(displayName: String, handle: String)
 }

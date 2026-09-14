@@ -10,6 +10,7 @@ import com.codeyantra.armorchat.domain.model.MessageStatus
 import com.codeyantra.armorchat.domain.model.MessageType
 import com.codeyantra.armorchat.domain.repository.MessageRepository
 import com.codeyantra.armorchat.domain.repository.SendTextResult
+import com.codeyantra.armorchat.messaging.ReplyMetadata
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.Flow
@@ -27,6 +28,9 @@ class MessageRepositoryImpl @Inject constructor(
     override fun observeMessages(conversationId: String): Flow<List<Message>> =
         messageDao.observeByConversation(conversationId).map { rows -> rows.map { it.toDomain() } }
 
+    override fun observeAllMessages(): Flow<List<Message>> =
+        messageDao.observeAllMessages().map { rows -> rows.map { it.toDomain() } }
+
     override suspend fun sendText(conversationId: String, text: String): SendTextResult =
         withContext(dispatchers.io) {
             val trimmed = text.trim()
@@ -34,10 +38,8 @@ class MessageRepositoryImpl @Inject constructor(
             if (conversationDao.findById(conversationId) == null) {
                 return@withContext SendTextResult.ConversationMissing
             }
-            // Never invent SENT/DELIVERED. Transport is unavailable in this phase.
             val available = transport.isAvailable.first()
             if (!available) return@withContext SendTextResult.TransportUnavailable
-            // Future: encrypt + enqueue. Still no fake receipts.
             SendTextResult.TransportUnavailable
         }
 
@@ -50,5 +52,8 @@ class MessageRepositoryImpl @Inject constructor(
         ciphertext = ciphertext,
         status = MessageStatus.valueOf(status),
         createdAtEpochMs = createdAtEpochMs,
+        replyTo = ReplyMetadata.fromJson(replyToJson),
+        deliveredAtEpochMs = deliveredAtEpochMs,
+        readAtEpochMs = readAtEpochMs,
     )
 }

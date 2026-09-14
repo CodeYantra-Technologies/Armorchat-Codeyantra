@@ -13,4 +13,6 @@ data class IdentityEntity(
     val publicIdentityKey: String,
     val createdAtEpochMs: Long,
     val version: Int,
+    val displayName: String = "",
+    val handle: String = "",
 )

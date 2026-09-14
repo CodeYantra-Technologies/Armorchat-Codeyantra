@@ -24,7 +24,7 @@ class ContactPersistenceTest {
     private fun payload(seed: Byte) = IdentityQrPayload.fromPublicKey(
         Ed25519PrivateKeyParameters(ByteArray(32) { seed }, 0).generatePublicKey().encoded)
     private fun open(name: String) = Room.databaseBuilder(context, ArmorChatDatabase::class.java, name)
-        .addMigrations(CONTACT_MIGRATION_2_3, CONVERSATION_MIGRATION_3_4).build()
+        .addMigrations(*ARMORCHAT_MIGRATIONS).build()
 
     @Test fun persistedPinSurvivesDatabaseCloseAndReopen() = runBlocking {
         val name = "contact-test-${UUID.randomUUID()}.db"

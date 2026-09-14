@@ -1,8 +1,11 @@
 package com.codeyantra.armorchat.domain.model
 
 /**
- * Reserved lifecycle for future outbound / inbound messages.
- * Network states must only be set by a real transport, never faked.
+ * Outbound delivery lifecycle.
+ *
+ * Production chat still does not set network states. The Phase 1D.4
+ * test harness enforces monotonic evidence SENT → DELIVERED → READ.
+ * Relay acceptance is SENT only and never DELIVERED or READ.
  */
 enum class MessageStatus {
     QUEUED,

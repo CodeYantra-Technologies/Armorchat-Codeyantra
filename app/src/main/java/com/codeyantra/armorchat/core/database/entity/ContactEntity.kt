@@ -12,4 +12,7 @@ data class ContactEntity(
     val displayName: String,
     val createdAtEpochMs: Long,
     val verificationMethod: String,
+    val handle: String? = null,
+    val previousHandle: String? = null,
+    val handleChangedAtEpochMs: Long? = null,
 )

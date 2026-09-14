@@ -30,10 +30,12 @@ fun SplashRoute(
     onFinished: (hasIdentity: Boolean) -> Unit,
     viewModel: IdentityViewModel = hiltViewModel(),
 ) {
-    val hasIdentity by viewModel.hasIdentity.collectAsStateWithLifecycle()
-    LaunchedEffect(Unit) {
-        delay(1400)
-        onFinished(hasIdentity)
+    val identityState by viewModel.identityState.collectAsStateWithLifecycle()
+    LaunchedEffect(identityState) {
+        if (identityState !is com.codeyantra.armorchat.feature.identity.IdentityState.Checking) {
+            delay(1000)
+            onFinished(identityState is com.codeyantra.armorchat.feature.identity.IdentityState.Ready)
+        }
     }
     SplashScreen()
 }

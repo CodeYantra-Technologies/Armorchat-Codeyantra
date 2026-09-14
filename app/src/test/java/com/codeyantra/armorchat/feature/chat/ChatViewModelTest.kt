@@ -1,10 +1,7 @@
 package com.codeyantra.armorchat.feature.chat
 
 import androidx.lifecycle.SavedStateHandle
-import com.codeyantra.armorchat.core.network.InboundEnvelope
-import com.codeyantra.armorchat.core.network.MessageTransport
-import com.codeyantra.armorchat.core.network.OutboundEnvelope
-import com.codeyantra.armorchat.core.network.TransportResult
+import com.codeyantra.armorchat.core.network.NetworkAvailability
 import com.codeyantra.armorchat.domain.model.Contact
 import com.codeyantra.armorchat.domain.model.ContactExchangeResult
 import com.codeyantra.armorchat.domain.model.Conversation
@@ -14,12 +11,15 @@ import com.codeyantra.armorchat.domain.repository.ContactRepository
 import com.codeyantra.armorchat.domain.repository.ConversationRepository
 import com.codeyantra.armorchat.domain.repository.MessageRepository
 import com.codeyantra.armorchat.domain.repository.SendTextResult
+import com.codeyantra.armorchat.messaging.ChatMessagingController
+import com.codeyantra.armorchat.messaging.ReplyMetadata
+import com.codeyantra.armorchat.messaging.RouteImportResult
+import com.codeyantra.armorchat.messaging.SecureSessionState
+import com.codeyantra.armorchat.messaging.SecureSessionView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.emptyFlow
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -54,40 +54,68 @@ class ChatViewModelTest {
         override fun observeContacts() = MutableStateFlow(listOf(contact))
         override fun observeContact(id: String) = MutableStateFlow(contact.takeIf { it.id == id })
         override suspend fun getContact(id: String) = contact.takeIf { it.id == id }
+        override suspend fun findByPublicKey(publicIdentityKey: String) =
+            contact.takeIf { it.publicIdentityKey == publicIdentityKey }
         override suspend fun inspectQr(raw: String) = ContactExchangeResult.Invalid
         override suspend fun addQr(raw: String, localName: String) = ContactExchangeResult.Invalid
+        override suspend fun addVerifiedBundle(
+            parsed: com.codeyantra.armorchat.domain.identity.ParsedContactQr,
+            localName: String,
+        ) = ContactExchangeResult.Invalid
         override suspend fun rename(id: String, localName: String) = Unit
+        override suspend fun addInboundPinned(
+            publicIdentityKey: String,
+            displayName: String,
+            handle: String?,
+        ) = contact
     }
 
     private class Conversations(private val conversation: Conversation) : ConversationRepository {
         override fun observeConversations() = MutableStateFlow(listOf(conversation))
-        override fun observeConversation(id: String) = MutableStateFlow(conversation.takeIf { it.id == id })
-        override suspend fun getConversation(id: String) = conversation.takeIf { it.id == id }
+        override fun observeConversation(id: String) = MutableStateFlow(conversation.takeIf { id == conversation.id })
+        override suspend fun getConversation(id: String) = conversation.takeIf { id == conversation.id }
         override suspend fun getOrCreateForContact(contact: Contact) = conversation
     }
 
     private class Messages : MessageRepository {
         val messages = MutableStateFlow<List<Message>>(emptyList())
-        var sendCalls = 0
         override fun observeMessages(conversationId: String) = messages
         override suspend fun sendText(conversationId: String, text: String): SendTextResult {
-            sendCalls++
             return SendTextResult.TransportUnavailable
         }
     }
 
-    private class Transport(available: Boolean = false) : MessageTransport {
-        override val isAvailable = flowOf(available)
-        override suspend fun send(envelope: OutboundEnvelope) = TransportResult.Unavailable
-        override fun incoming(): Flow<InboundEnvelope> = emptyFlow()
+    private class Messaging(
+        session: SecureSessionView = SecureSessionView(),
+    ) : ChatMessagingController {
+        override val network = MutableStateFlow(NetworkAvailability())
+        val sessions = MutableStateFlow(session)
+        var sendCalls = 0
+        override fun observeSession(contactId: String): Flow<SecureSessionView> = sessions
+        override suspend fun ensureProvisioned(contact: Contact) = Unit
+        override suspend fun getMyContactQrV2(): String? = null
+        override suspend fun importPeerContactV2(payload: com.codeyantra.armorchat.domain.identity.ContactQrV2) = RouteImportResult.Rejected
+        override suspend fun importPeerRoute(raw: String, contactId: String?) = RouteImportResult.Rejected
+        override fun localRouteQr(contactId: String) = session.localRouteQr
+        override suspend fun sendText(conversationId: String, text: String, replyTo: ReplyMetadata?): SendTextResult {
+            sendCalls++
+            return SendTextResult.TransportUnavailable
+        }
+        override suspend fun syncContact(contactId: String) = Unit
+        override suspend fun markOpened(conversationId: String, messageId: String) = Unit
+        override suspend fun refreshPolicy() = Unit
+        private val session get() = sessions.value
     }
 
-    private fun vm(messages: Messages = Messages(), available: Boolean = false) = ChatViewModel(
+    private fun vm(
+        messages: Messages = Messages(),
+        messaging: Messaging = Messaging(),
+    ) = ChatViewModel(
         savedStateHandle = SavedStateHandle(mapOf("conversationId" to conversation.id)),
         conversationRepository = Conversations(conversation),
         messageRepository = messages,
         contactRepository = Contacts(contact),
-        transport = Transport(available),
+        messaging = messaging,
     )
 
     @Test
@@ -101,24 +129,39 @@ class ChatViewModelTest {
     }
 
     @Test
-    fun composerDraftUpdates() = runTest(dispatcher) {
+    fun composerStaysDisabledWithoutSecureSession() = runTest(dispatcher) {
         val viewModel = vm()
         advanceUntilIdle()
         viewModel.onDraftChange("hello")
         advanceUntilIdle()
         assertEquals("hello", viewModel.state.value.draft)
         assertFalse(viewModel.state.value.canSend)
+        assertFalse(viewModel.state.value.sessionReady)
+    }
+
+    @Test
+    fun composerEnablesOnlyAfterEstablishedSession() = runTest(dispatcher) {
+        val messaging = Messaging(
+            SecureSessionView(state = SecureSessionState.ESTABLISHED, composerAllowed = true),
+        )
+        val viewModel = vm(messaging = messaging)
+        advanceUntilIdle()
+        viewModel.onDraftChange("hello")
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value.sessionReady)
+        assertTrue(viewModel.state.value.canSend)
     }
 
     @Test
     fun sendCannotFakeSuccessfulMessage() = runTest(dispatcher) {
         val messages = Messages()
-        val viewModel = vm(messages = messages, available = false)
+        val messaging = Messaging()
+        val viewModel = vm(messages = messages, messaging = messaging)
         advanceUntilIdle()
         viewModel.onDraftChange("secret")
         viewModel.send()
         advanceUntilIdle()
-        assertEquals(1, messages.sendCalls)
+        assertEquals(1, messaging.sendCalls)
         assertTrue(messages.messages.value.isEmpty())
         assertFalse(viewModel.state.value.canSend)
         assertTrue(viewModel.state.value.notice!!.contains("not sent"))

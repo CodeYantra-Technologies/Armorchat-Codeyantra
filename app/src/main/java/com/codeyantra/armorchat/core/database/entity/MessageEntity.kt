@@ -26,4 +26,10 @@ data class MessageEntity(
     val ciphertext: ByteArray?,
     val status: String,
     val createdAtEpochMs: Long,
+    val receiptSessionId: String? = null,
+    val receiptCiphertextSha256: String? = null,
+    val receiptEpoch: Long? = null,
+    val replyToJson: String? = null,
+    val deliveredAtEpochMs: Long? = null,
+    val readAtEpochMs: Long? = null,
 )

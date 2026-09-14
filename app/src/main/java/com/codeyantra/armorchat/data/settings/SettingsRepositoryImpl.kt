@@ -16,4 +16,10 @@ class SettingsRepositoryImpl @Inject constructor(
     override suspend fun setThemeMode(mode: ThemeMode) {
         settingsDataStore.setThemeMode(mode)
     }
+
+    override fun observeDeveloperMlsHarness(): Flow<Boolean> = settingsDataStore.developerMlsHarness
+
+    override suspend fun setDeveloperMlsHarness(enabled: Boolean) {
+        settingsDataStore.setDeveloperMlsHarness(enabled)
+    }
 }

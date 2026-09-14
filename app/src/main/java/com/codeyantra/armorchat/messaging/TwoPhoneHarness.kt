@@ -1,0 +1,709 @@
+package com.codeyantra.armorchat.messaging
+
+import com.codeyantra.armorchat.core.json.CanonicalJson
+import com.codeyantra.armorchat.core.network.ImmutableRelayEnvelope
+import com.codeyantra.armorchat.core.network.LeasedRelayEnvelope
+import com.codeyantra.armorchat.core.network.MailboxRegistration
+import com.codeyantra.armorchat.core.network.PEER_GRANT_TTL_SECONDS
+import com.codeyantra.armorchat.core.network.RelayClient
+import com.codeyantra.armorchat.core.network.RelayConsumeItem
+import com.codeyantra.armorchat.core.network.RelayFetchResult
+import com.codeyantra.armorchat.core.network.RelayQueueState
+import com.codeyantra.armorchat.core.network.RelaySubmitResult
+import com.codeyantra.armorchat.core.network.SubmitGrant
+import com.codeyantra.armorchat.crypto.MlsRsFeasibility
+import com.codeyantra.armorchat.domain.identity.Base64Url
+import java.security.SecureRandom
+import com.codeyantra.armorchat.messaging.SharedSessionDiagnostic.Stage
+
+class MlsEngine(
+    private val transactMls: (ByteArray, String) -> ByteArray,
+) {
+    var state: ByteArray = ByteArray(0)
+        private set
+
+    // Diagnostic-only pool bookkeeping; no snapshot or protocol changes.
+    internal var diagnosticPublishedBindings: List<String> = emptyList()
+    internal fun inspectWelcome(welcome: String, pin: String): Map<String, Any?> {
+        val raw = transactMls(state.copyOf(), CanonicalJson.of(mapOf(
+            "op" to "InspectWelcome", "welcome" to welcome, "pin" to pin,
+            "diagnostic_bindings" to diagnosticPublishedBindings,
+        )))
+        @Suppress("UNCHECKED_CAST")
+        return CanonicalJson.parseObject(String(raw, Charsets.UTF_8))["output"] as Map<String, Any?>
+    }
+
+    fun snapshot(): ByteArray = state.copyOf()
+
+    fun restore(saved: ByteArray) {
+        state = saved.copyOf()
+    }
+
+    fun call(request: Map<String, Any?>): Map<String, Any?> {
+        val raw = transactMls(state, CanonicalJson.of(request))
+        val staged = CanonicalJson.parseObject(String(raw, Charsets.UTF_8))
+        state = Base64Url.decode(staged["state"] as String)
+        @Suppress("UNCHECKED_CAST")
+        return staged["output"] as Map<String, Any?>
+    }
+}
+
+data class MessagingDiagnostics(
+    val lastMessageId: String? = null,
+    val epoch: Long? = null,
+    val relayState: String? = null,
+    val note: String? = null,
+)
+
+data class MlsAppResult(
+    val ciphertextB64: String,
+    val epoch: Long,
+    val sessionId: String,
+    val plaintext: String,
+)
+
+/**
+ * Test-only two-device MLS + relay peer. Not CryptoEngine. Not production chat.
+ */
+class TwoPhonePeer(
+    val signer: IdentitySigner,
+    private val relay: RelayClient,
+    private val nowSeconds: () -> Long,
+    transactMls: (ByteArray, String) -> ByteArray = { snapshot, request ->
+        MlsRsFeasibility.transact(snapshot, request)
+    },
+    engine: MlsEngine? = null,
+) {
+    val pin: String get() = signer.pin
+    val relayOrigin: String get() = relay.originHttps
+    val engine: MlsEngine = engine ?: MlsEngine(transactMls)
+    val state: ByteArray get() = engine.snapshot()
+    var mailbox: MailboxRegistration? = null
+        private set
+    var binding: String? = null
+        private set
+    var deviceId: String = Base64Url.encode(randomBytes(16))
+    var peerRoute: RouteInvitation? = null
+        private set
+    var pinnedPeer: String? = null
+    var groupCreated: Boolean = false
+        private set
+    var sessionConfirmed: Boolean = false
+        private set
+    var peerKeyPackageFresh: Boolean = false
+        private set
+    var sessionId: String? = null
+    var setupRouteSent: Boolean = false
+    var diagnostics = MessagingDiagnostics()
+        private set
+    val generation: Long = 1
+    var writeGrant: SubmitGrant? = null
+    private var lastApplication: ImmutableRelayEnvelope? = null
+    private val publishedBindings = mutableListOf<String>()
+    private var packagesPublished = false
+
+    private var diagnosticAttempt = java.util.UUID.randomUUID().toString()
+    internal fun diagnostic(stage: Stage, pass: Boolean = true, category: SharedSessionDiagnostic.Category? = null) {
+        SharedSessionDiagnostic.stage(stage, pinnedPeer?.takeUnless { it == SessionOrchestrator.INVITE_PEER }, diagnosticAttempt, pass, category)
+    }
+
+    fun snapshot(): ByteArray = engine.snapshot()
+
+    fun restore(saved: ByteArray) {
+        engine.restore(saved)
+    }
+
+    fun restoreGroupCreated(created: Boolean, confirmed: Boolean = false) {
+        groupCreated = created
+        sessionConfirmed = created && confirmed
+        peerKeyPackageFresh = false
+    }
+
+    fun mlsSnapshotEmpty(): Boolean = engine.snapshot().isEmpty()
+
+    fun needsKeyPackagePublish(): Boolean = !packagesPublished
+
+    fun ensureMlsDevice() {
+        if (engine.snapshot().isEmpty()) {
+            createMlsDevice()
+            packagesPublished = false
+            return
+        }
+        if (binding == null) {
+            val out = call(mapOf("op" to "GenerateKeyPackage"))
+            binding = signKeyPackage(out)
+            call(mapOf("op" to "Bind", "binding" to binding))
+            publishedBindings.clear()
+            publishedBindings += binding!!
+            packagesPublished = false
+        }
+    }
+
+    fun markGroupUnusable() {
+        groupCreated = false
+        sessionConfirmed = false
+        sessionId = null
+        setupRouteSent = false
+    }
+
+    fun markPeerKeyPackageFresh() {
+        peerKeyPackageFresh = true
+    }
+
+    fun sessionFingerprint(): String = SafeLog.shortRef(sessionId)
+
+    fun shouldInitiateMls(): Boolean =
+        peerRoute != null && peerKeyPackageFresh && !groupCreated
+
+    fun markSessionConfirmed() {
+        sessionConfirmed = true
+    }
+
+    fun confirmIfMatchingSession(peerSessionId: String): Boolean {
+        val local = sessionId ?: return false
+        diagnostic(Stage.session_id_match, local == peerSessionId)
+        if (local != peerSessionId) {
+            SafeLog.event(
+                "mls_session_mismatch",
+                "local=${SafeLog.shortRef(local)} peer=${SafeLog.shortRef(peerSessionId)}",
+            )
+            return false
+        }
+        sessionConfirmed = true
+        diagnostic(Stage.session_confirmed)
+        SafeLog.event("mls_shared_fp", "fp=${sessionFingerprint()}")
+        return true
+    }
+
+    fun markSessionUnconfirmed() {
+        sessionConfirmed = false
+    }
+
+    fun replacePeerKeyPackageBinding(binding: String) {
+        val route = peerRoute ?: return
+        verifyKeyPackageBinding(binding, route.inviterPin)
+        peerRoute = route.copy(keyPackageBinding = binding)
+    }
+
+    suspend fun discardHandshake(item: LeasedRelayEnvelope) {
+        runCatching { consume(item) }
+    }
+
+    fun restoreMailbox(registration: MailboxRegistration) {
+        mailbox = registration
+    }
+
+    fun restoreBinding(value: String) {
+        binding = value
+    }
+
+    fun restoreDeviceId(value: String) {
+        deviceId = value
+    }
+
+    fun createMlsDevice() {
+        val out = call(mapOf("op" to "Create", "pin" to pin))
+        binding = signKeyPackage(out)
+        call(mapOf("op" to "Bind", "binding" to binding))
+        publishedBindings.clear()
+        publishedBindings += binding!!
+    }
+
+    fun generateKeyPackageBinding(): String {
+        val out = call(mapOf("op" to "GenerateKeyPackage"))
+        val signed = signKeyPackage(out)
+        publishedBindings += signed
+        return signed
+    }
+
+    suspend fun registerAndPublish(poolSize: Int = 16) {
+        if (mailbox == null) {
+            try {
+                mailbox = relay.registerMailbox()
+                SafeLog.event("stage=MAILBOX_PROVISION result=PASS")
+            } catch (err: Exception) {
+                SafeLog.event("stage=MAILBOX_PROVISION result=FAIL exception=${err::class.java.name}")
+                throw err
+            }
+        } else {
+            SafeLog.event("stage=MAILBOX_PROVISION result=PASS")
+        }
+
+        val boxToken = mailbox?.ownerToken
+        if (!boxToken.isNullOrBlank()) {
+            SafeLog.event("stage=OWNER_TOKEN_AVAILABLE result=PASS")
+        } else {
+            val err = IllegalStateException("owner_token missing")
+            SafeLog.event("stage=OWNER_TOKEN_AVAILABLE result=FAIL exception=${err::class.java.name}")
+            throw err
+        }
+
+        if (packagesPublished) {
+            SafeLog.event("stage=KEY_PACKAGE_READY result=PASS")
+            return
+        }
+
+        while (publishedBindings.size < poolSize) {
+            try {
+                generateKeyPackageBinding()
+            } catch (err: Exception) {
+                val detail = if (com.codeyantra.armorchat.BuildConfig.DEBUG) {
+                    val raw = err.message.orEmpty().replace(Regex("[A-Za-z0-9+/=_-]{24,}"), "…").take(160)
+                    " detail=$raw"
+                } else {
+                    ""
+                }
+                SafeLog.event("stage=KEY_PACKAGE_READY result=FAIL exception=${err::class.java.name}$detail")
+                throw err
+            }
+        }
+
+        val expires = nowSeconds() + 7L * 24 * 3600
+        val packages = mapOf(
+            "key_packages" to publishedBindings.map { item ->
+                mapOf(
+                    "binding" to item,
+                    "expires_at" to expires,
+                    "key_package_id" to Base64Url.encode(randomBytes(16)),
+                )
+            },
+            "protocol_version" to 1L,
+            "suite" to "ac-mls-v1",
+        )
+        try {
+            relay.putKeyPackages(mailbox!!.ownerToken, CanonicalJson.of(packages))
+            packagesPublished = true
+            engine.diagnosticPublishedBindings = publishedBindings.toList()
+            diagnostic(Stage.fresh_kp_published)
+            SafeLog.event("stage=KEY_PACKAGE_READY result=PASS")
+        } catch (err: Exception) {
+            SafeLog.event("stage=KEY_PACKAGE_READY result=FAIL exception=${err::class.java.name}")
+            throw err
+        }
+    }
+
+    fun exportRoute(recipientPin: String): RouteInvitation {
+        val box = mailbox ?: error("mailbox required")
+        return RouteInvitation.issue(
+            signer = signer,
+            relayOrigin = relay.originHttps,
+            mailboxId = box.mailboxId,
+            submitCapability = box.submitCapability,
+            deviceId = deviceId,
+            recipientPin = recipientPin,
+            keyPackageBinding = binding ?: error("binding required"),
+            nowEpochSeconds = nowSeconds(),
+        )
+    }
+
+    fun exportContactBundleV3(
+        token: String,
+        handle: String?,
+        displayName: String?,
+    ): com.codeyantra.armorchat.domain.identity.ContactBundleV3 {
+        val box = mailbox ?: error("mailbox required")
+        return com.codeyantra.armorchat.domain.identity.ContactBundleV3.issue(
+            signer = signer,
+            token = token,
+            handle = handle,
+            displayName = displayName,
+            relayOrigin = relay.originHttps,
+            mailboxId = box.mailboxId,
+            deviceId = deviceId,
+            nowEpochSeconds = nowSeconds(),
+        )
+    }
+
+    suspend fun issuePeerGrant(): SubmitGrant {
+        val box = mailbox ?: error("mailbox required")
+        val grant = relay.createPeerGrant(box.ownerToken, nowSeconds() + PEER_GRANT_TTL_SECONDS)
+            ?: error("peer grant failed")
+        writeGrant = grant
+        return grant
+    }
+
+    suspend fun exportPeerRoute(recipientPin: String): RouteInvitation {
+        val box = mailbox ?: error("mailbox required")
+        // The invite-redeem flow rotates the mailbox's submit capability server-side
+        // when the counterparty redeems, so a cached box.submitCapability (and
+        // issuePeerGrant()'s /v1/grants, which the relay rejects outright) are both
+        // stale here. Rotate to the current capability before handing it out.
+        val freshCapability = relay.rotateSubmitCapability(box.ownerToken) ?: box.submitCapability
+        mailbox = box.copy(submitCapability = freshCapability)
+        return RouteInvitation.issue(
+            signer = signer,
+            relayOrigin = relay.originHttps,
+            mailboxId = box.mailboxId,
+            submitCapability = freshCapability,
+            deviceId = deviceId,
+            recipientPin = recipientPin,
+            keyPackageBinding = binding ?: error("binding required"),
+            nowEpochSeconds = nowSeconds(),
+        )
+    }
+
+    fun exportContactV2(): com.codeyantra.armorchat.domain.identity.ContactQrV2 {
+        val box = mailbox ?: error("mailbox required")
+        return com.codeyantra.armorchat.domain.identity.ContactQrV2.issue(
+            signer = signer,
+            relayOrigin = relay.originHttps,
+            mailboxId = box.mailboxId,
+            submitCapability = box.submitCapability,
+            deviceId = deviceId,
+            keyPackageBinding = binding ?: error("binding required"),
+            nowEpochSeconds = nowSeconds(),
+        )
+    }
+
+    fun importRoute(raw: String, expectedPeerPin: String, freshKp: Boolean = false) {
+        val route = RouteInvitation.parse(raw, pin, nowSeconds())
+        importRouteObj(route, expectedPeerPin, freshKp)
+    }
+
+    fun importRouteObj(route: RouteInvitation, expectedPeerPin: String, freshKp: Boolean = false) {
+        require(route.inviterPin == expectedPeerPin) { "route inviter does not match pinned identity" }
+        peerRoute = route
+        peerKeyPackageFresh = freshKp
+        if (freshKp) {
+            diagnosticAttempt = java.util.UUID.randomUUID().toString()
+            diagnostic(Stage.fresh_route_imported)
+        }
+    }
+
+    suspend fun initiateGroup(): String {
+        diagnostic(Stage.initiator_selected, peerKeyPackageFresh)
+        if (groupCreated) error("group already created")
+        ensureMlsDevice()
+        val route = peerRoute ?: error("peer route required")
+        if (binding == null) error("binding required")
+        verifyKeyPackageBinding(route.keyPackageBinding, route.inviterPin)
+        val created = call(mapOf("op" to "CreateGroup"))
+        sessionId = created["session_id"] as String
+        diagnosticAttempt = sessionId!!
+        diagnostic(Stage.group_created)
+        val add = call(
+            mapOf(
+                "op" to "AddMember",
+                "peer_binding" to route.keyPackageBinding,
+                "peer_pin" to route.inviterPin,
+            ),
+        )
+        diagnostic(Stage.add_member_ok)
+        val welcome = add["welcome"] as String
+        sessionId = add["session_id"] as String
+        val accepted = submitHandshake(welcome, route)
+        groupCreated = true
+        sessionConfirmed = false
+        peerKeyPackageFresh = false
+        diagnostics = diagnostics.copy(
+            lastMessageId = accepted.messageId,
+            epoch = add["epoch"] as Long,
+            relayState = accepted.state.name.lowercase(),
+            note = "welcome accepted",
+        )
+        return welcome
+    }
+
+    suspend fun joinFromInbox(expectedPeerPin: String? = peerRoute?.inviterPin ?: pinnedPeer): Boolean {
+        val fetched = fetchOwn()
+        return joinWelcome(fetched, expectedPeerPin)
+    }
+
+    suspend fun joinWelcome(
+        fetched: List<LeasedRelayEnvelope>,
+        expectedPeerPin: String? = peerRoute?.inviterPin ?: pinnedPeer,
+    ): Boolean {
+        val welcome = fetched.firstOrNull { it.payloadType == ImmutableRelayEnvelope.PAYLOAD_HANDSHAKE }
+            ?: return false
+        val cred = welcome.senderCredentialCanonical ?: error("handshake missing sender credential")
+        val peerPin = expectedPeerPin ?: error("peer pin required")
+        try {
+            verifyKeyPackageBinding(cred, peerPin)
+            diagnostic(Stage.welcome_sender_verified)
+        } catch (err: Exception) {
+            diagnostic(Stage.welcome_sender_verified, false, SharedSessionDiagnostic.category(err))
+            throw err
+        }
+        if (com.codeyantra.armorchat.BuildConfig.DEBUG) {
+            runCatching { engine.inspectWelcome(welcome.encryptedPayloadB64, pin) }
+                .onSuccess { result ->
+                    val stored = result["stored_match"] == true
+                    val fresh = result["fresh_match"] == true
+                    diagnostic(Stage.welcome_keypackage_match, stored && fresh,
+                        if (!stored) SharedSessionDiagnostic.Category.key_package_not_found
+                        else if (!fresh) SharedSessionDiagnostic.Category.fresh_pool_mismatch else null)
+                }.onFailure {
+                    diagnostic(Stage.welcome_keypackage_match, false, SharedSessionDiagnostic.Category.diagnostic_unavailable)
+                }
+        }
+        diagnostic(Stage.welcome_join_started)
+        val join = try {
+            call(mapOf("op" to "Join", "welcome" to welcome.encryptedPayloadB64))
+        } catch (err: Exception) {
+            diagnostic(Stage.welcome_joined, false, SharedSessionDiagnostic.category(err))
+            val detail = if (com.codeyantra.armorchat.BuildConfig.DEBUG) {
+                val raw = (err.message.orEmpty() + " cause=" + (err.cause?.message.orEmpty()))
+                    .replace(Regex("[A-Za-z0-9+/=_-]{24,}"), "…").take(200)
+                " detail=$raw"
+            } else {
+                ""
+            }
+            SafeLog.event("stage=MLS_JOIN_NATIVE result=FAIL exception=${err::class.java.name}$detail")
+            throw err
+        }
+        diagnostic(Stage.welcome_joined)
+        if (com.codeyantra.armorchat.BuildConfig.DEBUG) {
+            val shape = join.entries.joinToString(",") { (k, v) -> "$k=${v?.let { it::class.java.simpleName } ?: "null"}" }
+            SafeLog.event("stage=MLS_JOIN_SHAPE result=PASS keys=$shape")
+        }
+        sessionId = join["session_id"] as String
+        diagnosticAttempt = sessionId!!
+        consume(welcome)
+        groupCreated = true
+        sessionConfirmed = false
+        diagnostics = diagnostics.copy(
+            lastMessageId = welcome.messageId,
+            epoch = join["epoch"] as Long,
+            relayState = "fetched",
+            note = "joined group",
+        )
+        return true
+    }
+
+    suspend fun sendPlaintext(text: String): RelaySubmitResult.Accepted {
+        val enc = call(mapOf("op" to "Encrypt", "plaintext" to text))
+        val ciphertext = enc["ciphertext"] as String
+        require(ciphertext != text) { "plaintext must not leave the device" }
+        val route = peerRoute ?: error("peer route required")
+        val env = applicationEnvelope(route.mailboxId, ciphertext)
+        lastApplication = env
+        val result = relay.submitEnvelope(route.submitCapability, env)
+        val accepted = result as? RelaySubmitResult.Accepted ?: error("submit failed: $result")
+        require(accepted.state == RelayQueueState.ACCEPTED)
+        diagnostics = diagnostics.copy(
+            lastMessageId = accepted.messageId,
+            epoch = enc["epoch"] as Long,
+            relayState = "accepted",
+            note = "application sent",
+        )
+        return accepted
+    }
+
+    suspend fun receivePlaintext(): String? {
+        val fetched = fetchOwn()
+        val app = fetched.firstOrNull { it.payloadType == ImmutableRelayEnvelope.PAYLOAD_APPLICATION }
+            ?: return null
+        val dec = call(mapOf("op" to "Decrypt", "ciphertext" to app.encryptedPayloadB64))
+        consume(app)
+        val plaintext = dec["plaintext"] as String
+        diagnostics = diagnostics.copy(
+            lastMessageId = app.messageId,
+            epoch = dec["epoch"] as Long,
+            relayState = "fetched",
+            note = "application decrypted",
+        )
+        return plaintext
+    }
+
+    suspend fun selfUpdate(): String {
+        val out = call(mapOf("op" to "SelfUpdate"))
+        diagnostics = diagnostics.copy(epoch = out["epoch"] as Long, note = "self-update")
+        return out["commit"] as String
+    }
+
+    fun applyCommit(commitB64: String) {
+        val out = call(mapOf("op" to "ApplyCommit", "commit" to commitB64))
+        diagnostics = diagnostics.copy(epoch = out["epoch"] as Long)
+    }
+
+    fun decryptLocal(ciphertextB64: String): String {
+        return call(mapOf("op" to "Decrypt", "ciphertext" to ciphertextB64))["plaintext"] as String
+    }
+
+    fun encryptApplication(text: String): String {
+        return encryptRaw(text).ciphertextB64
+    }
+
+    fun encryptRaw(plaintext: String): MlsAppResult {
+        val enc = call(mapOf("op" to "Encrypt", "plaintext" to plaintext))
+        return MlsAppResult(
+            ciphertextB64 = enc["ciphertext"] as String,
+            epoch = enc["epoch"] as Long,
+            sessionId = enc["session_id"] as String,
+            plaintext = plaintext,
+        )
+    }
+
+    fun decryptRaw(ciphertextB64: String): MlsAppResult {
+        val dec = call(mapOf("op" to "Decrypt", "ciphertext" to ciphertextB64))
+        return MlsAppResult(
+            ciphertextB64 = ciphertextB64,
+            epoch = dec["epoch"] as Long,
+            sessionId = dec["session_id"] as String,
+            plaintext = dec["plaintext"] as String,
+        )
+    }
+
+    fun sessionInfo(): MlsAppResult {
+        val out = call(mapOf("op" to "Session"))
+        return MlsAppResult(
+            ciphertextB64 = "",
+            epoch = out["epoch"] as Long,
+            sessionId = out["session_id"] as String,
+            plaintext = "",
+        )
+    }
+
+    fun ownMailboxId(): String = mailbox?.mailboxId ?: error("mailbox required")
+
+    fun makeApplicationEnvelope(
+        ciphertextB64: String,
+        messageId: String,
+        expiresAt: Long,
+    ): ImmutableRelayEnvelope {
+        val route = peerRoute ?: error("peer route required")
+        return ImmutableRelayEnvelope(
+            messageId = messageId,
+            recipientMailbox = route.mailboxId,
+            expiresAt = expiresAt,
+            payloadType = ImmutableRelayEnvelope.PAYLOAD_APPLICATION,
+            encryptedPayloadB64 = ciphertextB64,
+        )
+    }
+
+    suspend fun submitEnvelopeToPeer(env: ImmutableRelayEnvelope): RelaySubmitResult {
+        val route = peerRoute ?: error("peer route required")
+        return relay.submitEnvelope(route.submitCapability, env)
+    }
+
+    suspend fun fetchInboxResult(): RelayFetchResult {
+        val box = mailbox ?: return RelayFetchResult.Unavailable
+        return relay.fetchInbox(box.ownerToken).also { result ->
+            if (result is RelayFetchResult.Leased) {
+                result.envelopes.filter { it.payloadType == ImmutableRelayEnvelope.PAYLOAD_HANDSHAKE }.forEach {
+                    SharedSessionDiagnostic.stage(Stage.welcome_received,
+                        pinnedPeer?.takeUnless { pin -> pin == SessionOrchestrator.INVITE_PEER }, it.messageId)
+                }
+            }
+        }
+    }
+
+    suspend fun fetchLeased(): List<LeasedRelayEnvelope> = fetchOwn()
+
+    suspend fun consumeLeased(item: LeasedRelayEnvelope) = consume(item)
+
+    suspend fun resubmitLast(): RelaySubmitResult {
+        val env = lastApplication ?: error("no application envelope")
+        val route = peerRoute ?: error("peer route required")
+        return relay.submitEnvelope(route.submitCapability, env)
+    }
+
+    private fun call(request: Map<String, Any?>): Map<String, Any?> {
+        val skipSession = request["op"] == "Create" || request["op"] == "Bind" || request["op"] == "GenerateKeyPackage"
+        val payload = if (sessionId != null && request["session_id"] == null && !skipSession) {
+            LinkedHashMap(request).apply { put("session_id", sessionId) }
+        } else {
+            request
+        }
+        return try {
+            engine.call(payload)
+        } catch (err: Exception) {
+            val stage = when (request["op"]) {
+                "CreateGroup" -> Stage.group_created
+                "AddMember" -> Stage.add_member_ok
+                else -> null
+            }
+            if (stage != null) diagnostic(stage, false, SharedSessionDiagnostic.category(err))
+            throw err
+        }
+    }
+
+    private fun signKeyPackage(out: Map<String, Any?>): String {
+        @Suppress("UNCHECKED_CAST")
+        val body = out["body"] as Map<String, Any?>
+        val framed = CanonicalJson.frame(ArmorChatContexts.KEY_PACKAGE, body)
+        val signature = Base64Url.encode(signer.sign(ArmorChatContexts.KEY_PACKAGE, framed))
+        return CanonicalJson.of(mapOf("body" to body, "signature" to signature))
+    }
+
+    suspend fun joinMatchingWelcome(
+        fetched: List<LeasedRelayEnvelope>,
+        expectedPeerPin: String,
+    ): Boolean {
+        val welcome = fetched.firstOrNull { item ->
+            item.payloadType == ImmutableRelayEnvelope.PAYLOAD_HANDSHAKE &&
+                item.senderCredentialCanonical != null &&
+                runCatching {
+                    verifyKeyPackageBinding(item.senderCredentialCanonical!!, expectedPeerPin)
+                    true
+                }.getOrDefault(false)
+        } ?: return false
+        return joinWelcome(listOf(welcome), expectedPeerPin)
+    }
+
+    private suspend fun fetchOwn(): List<LeasedRelayEnvelope> {
+        val box = mailbox ?: error("mailbox required")
+        return when (val result = relay.fetchInbox(box.ownerToken)) {
+            is RelayFetchResult.Leased -> result.envelopes
+            is RelayFetchResult.ServiceSuspended -> error("SERVICE_SUSPENDED")
+            else -> error("fetch failed: $result")
+        }
+    }
+
+    private suspend fun consume(item: LeasedRelayEnvelope) {
+        val box = mailbox ?: error("mailbox required")
+        relay.consumeInbox(
+            box.ownerToken,
+            listOf(RelayConsumeItem(item.messageId, item.envelopeSha256, item.leaseToken)),
+        )
+    }
+
+    private suspend fun submitHandshake(welcomeB64: String, route: RouteInvitation): RelaySubmitResult.Accepted {
+        val cred = CanonicalJson.of(CanonicalJson.parseObject(binding ?: error("binding required")))
+        val env = ImmutableRelayEnvelope(
+            messageId = Base64Url.encode(randomBytes(16)),
+            recipientMailbox = route.mailboxId,
+            expiresAt = nowSeconds() + 7L * 24 * 3600,
+            payloadType = ImmutableRelayEnvelope.PAYLOAD_HANDSHAKE,
+            encryptedPayloadB64 = welcomeB64,
+            senderCredentialCanonical = cred,
+        )
+        val result = relay.submitEnvelope(route.submitCapability, env)
+        SharedSessionDiagnostic.stage(Stage.welcome_submitted, route.inviterPin, env.messageId,
+            result is RelaySubmitResult.Accepted)
+        return result as? RelaySubmitResult.Accepted ?: error("welcome submit failed: $result")
+    }
+
+    private fun applicationEnvelope(mailboxId: String, ciphertextB64: String) = ImmutableRelayEnvelope(
+        messageId = Base64Url.encode(randomBytes(16)),
+        recipientMailbox = mailboxId,
+        expiresAt = nowSeconds() + 7L * 24 * 3600,
+        payloadType = ImmutableRelayEnvelope.PAYLOAD_APPLICATION,
+        encryptedPayloadB64 = ciphertextB64,
+    )
+}
+
+fun pinFromKeyPackageBinding(raw: String): String {
+    val signed = CanonicalJson.parseObject(raw)
+    @Suppress("UNCHECKED_CAST")
+    val body = signed["body"] as Map<String, Any?>
+    return body["identity_key"] as String
+}
+
+fun verifyKeyPackageBinding(raw: String, pin: String) {
+    val signed = CanonicalJson.parseObject(raw)
+    @Suppress("UNCHECKED_CAST")
+    val body = signed["body"] as Map<String, Any?>
+    require((body["v"] as Long) == 1L && body["suite"] == "ac-mls-v1")
+    require(body["identity_key"] == pin)
+    val framed = CanonicalJson.frame(ArmorChatContexts.KEY_PACKAGE, body)
+    verifyEd25519(pin, framed, Base64Url.decode(signed["signature"] as String))
+}
+
+private fun randomBytes(n: Int): ByteArray {
+    val out = ByteArray(n)
+    SecureRandom().nextBytes(out)
+    return out
+}
+
+

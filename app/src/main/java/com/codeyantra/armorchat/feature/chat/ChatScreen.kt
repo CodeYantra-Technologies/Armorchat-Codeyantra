@@ -1,41 +1,72 @@
 package com.codeyantra.armorchat.feature.chat
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SmallFloatingActionButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.codeyantra.armorchat.R
+import com.codeyantra.armorchat.domain.model.AttachmentMetadata
 import com.codeyantra.armorchat.domain.model.Message
+import com.codeyantra.armorchat.messaging.SecureSessionState
+import com.codeyantra.armorchat.messaging.SecureSessionView
+import com.codeyantra.armorchat.ui.components.ArmorChatAvatar
+import com.codeyantra.armorchat.ui.components.ChatWallpaper
 import com.codeyantra.armorchat.ui.components.EmptyState
 import java.text.DateFormat
 import java.util.Calendar
 import java.util.Date
+import kotlinx.coroutines.launch
 
 @Composable
 fun ChatRoute(
@@ -44,6 +75,39 @@ fun ChatRoute(
     viewModel: ChatViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> viewModel.setChatVisible(true)
+                Lifecycle.Event.ON_PAUSE -> viewModel.setChatVisible(false)
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.setChatVisible(false)
+        }
+    }
+    LaunchedEffect(state.sessionReady, state.messages.size) {
+        if (state.sessionReady &&
+            lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+        ) {
+            viewModel.markVisibleInbound()
+        }
+    }
+    LaunchedEffect(state.contact?.id, lifecycleOwner) {
+        if (state.contact?.id == null) return@LaunchedEffect
+        while (true) {
+            if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+                viewModel.syncNow()
+            }
+            kotlinx.coroutines.delay(3_000)
+        }
+    }
     ChatScreen(
         state = state,
         onBack = onBack,
@@ -51,8 +115,27 @@ fun ChatRoute(
             state.contact?.id?.let(onOpenContact)
         },
         onDraftChange = viewModel::onDraftChange,
-        onSend = viewModel::send,
+        onSendText = viewModel::send,
+        onSendAttachment = { pending ->
+            viewModel.sendAttachment(
+                context = context,
+                uri = pending.uri,
+                originalName = pending.name,
+                mimeType = pending.mimeType,
+                sizeBytes = pending.sizeBytes,
+            )
+        },
+        onDownloadAttachment = viewModel::downloadAttachment,
         onClearNotice = viewModel::clearNotice,
+        replyingToMessage = viewModel.replyingToMessage,
+        onCancelReply = { viewModel.setReplyingTo(null) },
+        onReply = viewModel::setReplyingTo,
+        highlightedMessageId = viewModel.highlightedMessageId,
+        onHighlightMessage = viewModel::highlightMessage,
+        onShowNotice = viewModel::showNotice,
+        messageForInfo = viewModel.messageForInfo,
+        onOpenMessageInfo = viewModel::setInfoMessage,
+        onDismissMessageInfo = { viewModel.setInfoMessage(null) },
     )
 }
 
@@ -63,72 +146,110 @@ fun ChatScreen(
     onBack: () -> Unit,
     onOpenContact: () -> Unit,
     onDraftChange: (String) -> Unit,
-    onSend: () -> Unit,
+    onSendText: () -> Unit,
+    onSendAttachment: (PendingAttachment) -> Unit,
+    onDownloadAttachment: (AttachmentMetadata, (Boolean) -> Unit) -> Unit,
     onClearNotice: () -> Unit,
+    replyingToMessage: Message? = null,
+    onCancelReply: () -> Unit = {},
+    onReply: (Message) -> Unit = {},
+    highlightedMessageId: String? = null,
+    onHighlightMessage: (String?) -> Unit = {},
+    onShowNotice: (String) -> Unit = {},
+    messageForInfo: Message? = null,
+    onOpenMessageInfo: (Message) -> Unit = {},
+    onDismissMessageInfo: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val colors = MaterialTheme.colorScheme
+    val scope = rememberCoroutineScope()
+
+    messageForInfo?.let { infoMsg ->
+        MessageInfoBottomSheet(
+            message = infoMsg,
+            contactName = state.displayName,
+            onDismiss = onDismissMessageInfo,
+        )
+    }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             CenterAlignedTopAppBar(
                 title = {
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .clickable(onClick = onOpenContact),
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.clickable(onClick = onOpenContact),
                     ) {
-                        Text(
-                            text = state.displayName,
-                            style = MaterialTheme.typography.titleMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                        ArmorChatAvatar(
+                            displayName = state.displayName,
+                            modifier = Modifier.size(36.dp),
                         )
-                        state.shortArmorChatId?.let { shortId ->
+                        Spacer(Modifier.width(10.dp))
+                        Column {
                             Text(
-                                text = shortId,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                text = state.displayName,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = colors.onSurface,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Lock,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(10.dp),
+                                    tint = colors.tertiary,
+                                )
+                                Spacer(Modifier.width(3.dp))
+                                Text(
+                                    text = state.contactHandle ?: state.shortArmorChatId ?: "Secure MLS Chat",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = colors.onSurfaceVariant,
+                                )
+                            }
                         }
-                        Text(
-                            text = stringResource(R.string.chat_identity_pinned),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
                     }
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = stringResource(R.string.action_back))
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                            contentDescription = stringResource(R.string.action_back),
+                            tint = colors.onSurface,
+                        )
                     }
                 },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = colors.surface,
                 ),
             )
         },
         bottomBar = {
-            ChatComposer(
-                draft = state.draft,
-                canSend = state.canSend,
-                transportAvailable = state.transportAvailable,
-                onDraftChange = onDraftChange,
-                onSend = onSend,
-            )
+            when {
+                state.networkUnavailable -> NetworkUnavailableBar()
+                !state.sessionReady -> SecuringChatBar(session = state.session)
+                else -> ChatComposer(
+                    draft = state.draft,
+                    canSend = state.canSend,
+                    onDraftChange = onDraftChange,
+                    onSendText = onSendText,
+                    onSendAttachment = onSendAttachment,
+                    replyingToMessage = replyingToMessage,
+                    onCancelReply = onCancelReply,
+                )
+            }
         },
     ) { padding ->
         Column(
-            Modifier
+            modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
         ) {
             state.notice?.let { message ->
                 Text(
                     text = message,
-                    color = MaterialTheme.colorScheme.error,
+                    color = colors.error,
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -136,61 +257,211 @@ fun ChatScreen(
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                 )
             }
-            if (state.messages.isEmpty()) {
+            if (state.networkUnavailable) {
                 EmptyState(
                     icon = Icons.Outlined.ChatBubbleOutline,
-                    title = stringResource(R.string.chat_empty_title),
-                    body = stringResource(R.string.chat_empty_body),
+                    title = stringResource(R.string.network_unavailable_title),
+                    body = stringResource(R.string.network_unavailable_body),
                     modifier = Modifier.weight(1f),
                 )
             } else {
                 val listState = rememberLazyListState()
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                ) {
-                    items(
-                        items = withDateSeparators(state.messages),
-                        key = { row ->
-                            when (row) {
-                                is ChatRow.Separator -> "sep-${row.label}-${row.key}"
-                                is ChatRow.Bubble -> row.message.id
-                            }
-                        },
-                    ) { row ->
-                        when (row) {
-                            is ChatRow.Separator -> MessageDateSeparator(row.label)
-                            is ChatRow.Bubble -> MessageBubble(row.message)
+                val rows = remember(state.messages) { withDateSeparators(state.messages) }
+
+                val isAtBottom by remember {
+                    derivedStateOf {
+                        val layoutInfo = listState.layoutInfo
+                        val visibleItems = layoutInfo.visibleItemsInfo
+                        if (visibleItems.isEmpty()) true
+                        else {
+                            val lastVisible = visibleItems.last()
+                            lastVisible.index >= layoutInfo.totalItemsCount - 3
                         }
                     }
-                    item { Spacer(Modifier.height(8.dp)) }
+                }
+
+                var previousMessageCount by remember { mutableIntStateOf(0) }
+                LaunchedEffect(state.messages.size) {
+                    val totalCount = state.messages.size
+                    if (totalCount > 0 && rows.isNotEmpty()) {
+                        if (previousMessageCount == 0 || isAtBottom) {
+                            listState.animateScrollToItem(rows.size - 1)
+                        }
+                    }
+                    previousMessageCount = totalCount
+                }
+
+                ChatWallpaper(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier.fillMaxSize(),
+                        ) {
+                            item {
+                                EmptyChatIntroBadge()
+                            }
+                            items(
+                                items = rows,
+                                key = { row ->
+                                    when (row) {
+                                        is ChatRow.Separator -> "sep-${row.label}-${row.key}"
+                                        is ChatRow.Bubble -> row.message.id
+                                    }
+                                },
+                            ) { row ->
+                                when (row) {
+                                    is ChatRow.Separator -> MessageDateSeparator(row.label)
+                                    is ChatRow.Bubble -> MessageBubble(
+                                        message = row.message,
+                                        onDownloadAttachment = onDownloadAttachment,
+                                        onReply = onReply,
+                                        onOpenMessageInfo = onOpenMessageInfo,
+                                        onTapQuote = { targetId ->
+                                            val index = rows.indexOfFirst { r -> r is ChatRow.Bubble && r.message.id == targetId }
+                                            if (index != -1) {
+                                                scope.launch {
+                                                    listState.animateScrollToItem(index)
+                                                }
+                                                onHighlightMessage(targetId)
+                                                scope.launch {
+                                                    kotlinx.coroutines.delay(1500)
+                                                    onHighlightMessage(null)
+                                                }
+                                            } else {
+                                                onShowNotice("Original message unavailable")
+                                            }
+                                        },
+                                        isHighlighted = row.message.id == highlightedMessageId,
+                                    )
+                                }
+                            }
+                            item { Spacer(Modifier.height(8.dp)) }
+                        }
+
+                        if (!isAtBottom && rows.isNotEmpty()) {
+                            SmallFloatingActionButton(
+                                onClick = {
+                                    scope.launch {
+                                        listState.animateScrollToItem(rows.size - 1)
+                                    }
+                                },
+                                containerColor = colors.surfaceVariant,
+                                contentColor = colors.onSurfaceVariant,
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(16.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.KeyboardArrowDown,
+                                    contentDescription = "Scroll to bottom",
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-private sealed interface ChatRow {
+@Composable
+private fun NetworkUnavailableBar() {
+    val colors = MaterialTheme.colorScheme
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = colors.errorContainer,
+    ) {
+        Text(
+            text = "Network offline — relay unavailable",
+            style = MaterialTheme.typography.bodyMedium,
+            color = colors.onErrorContainer,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(12.dp),
+        )
+    }
+}
+
+@Composable
+private fun SecuringChatBar(session: SecureSessionView) {
+    val colors = MaterialTheme.colorScheme
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = colors.surfaceVariant,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = session.setupHint ?: "Securing chat…",
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun EmptyChatIntroBadge() {
+    val colors = MaterialTheme.colorScheme
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 32.dp, horizontal = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Surface(
+            shape = RoundedCornerShape(24.dp),
+            color = colors.surfaceVariant.copy(alpha = 0.6f),
+            modifier = Modifier.size(64.dp),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = Icons.Outlined.Shield,
+                    contentDescription = null,
+                    tint = colors.primary,
+                    modifier = Modifier.size(32.dp),
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Text(
+            text = "End-to-End Encrypted",
+            style = MaterialTheme.typography.titleSmall,
+            color = colors.onSurface,
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "Messages and calls are secured with mls-rs and verified cryptographic identity pins.",
+            style = MaterialTheme.typography.bodySmall,
+            color = colors.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+    }
+}
+
+sealed interface ChatRow {
     data class Separator(val label: String, val key: Long) : ChatRow
     data class Bubble(val message: Message) : ChatRow
 }
 
 private fun withDateSeparators(messages: List<Message>): List<ChatRow> {
-    if (messages.isEmpty()) return emptyList()
-    val out = ArrayList<ChatRow>(messages.size + 4)
-    var lastDay: Int? = null
-    val cal = Calendar.getInstance()
-    for (message in messages) {
-        cal.timeInMillis = message.createdAtEpochMs
-        val day = cal.get(Calendar.YEAR) * 1000 + cal.get(Calendar.DAY_OF_YEAR)
-        if (day != lastDay) {
-            out += ChatRow.Separator(
-                label = DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(message.createdAtEpochMs)),
-                key = message.createdAtEpochMs,
-            )
-            lastDay = day
+    val out = mutableListOf<ChatRow>()
+    var lastDate: String? = null
+    val dateFormat = DateFormat.getDateInstance(DateFormat.MEDIUM)
+
+    for (msg in messages) {
+        val dateStr = dateFormat.format(Date(msg.createdAtEpochMs))
+        if (dateStr != lastDate) {
+            lastDate = dateStr
+            out.add(ChatRow.Separator(dateStr, msg.createdAtEpochMs))
         }
-        out += ChatRow.Bubble(message)
+        out.add(ChatRow.Bubble(msg))
     }
     return out
 }

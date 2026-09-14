@@ -12,4 +12,11 @@ data class UserIdentity(
     val publicIdentityKey: String,
     val createdAtEpochMs: Long,
     val version: Int = 1,
-)
+    /** Local display name. Not a cryptographic identity. */
+    val displayName: String = "",
+    /** Canonical handle without `@`. Not a cryptographic identity. */
+    val handle: String = "",
+) {
+    val handleDisplay: String
+        get() = handle.takeIf { it.isNotBlank() }?.let { "@$it" }.orEmpty()
+}

@@ -73,14 +73,7 @@ class IdentityLocalDataSource @Inject constructor(
             )
         }
 
-        if (existingMeta == null && hasKeys) {
-            IdentityDiagnostics.stage("load-existing", "success=false, category=metadata-missing")
-            throw IdentityStorageException.InconsistentState(
-                "Encrypted identity key material exists but Room metadata is missing.",
-            )
-        }
-
-        // Fresh create
+        // Fresh create (or clean reinstall where orphaned key file existed without Room record)
         lateinit var publicKey: ByteArray
         val keyElapsed = measureTimeMillis {
             publicKey = secureIdentityKeyStore.createAndStore()
@@ -174,11 +167,27 @@ class IdentityLocalDataSource @Inject constructor(
         }
     }
 
+    suspend fun updateProfile(displayName: String, handle: String) = createMutex.withLock {
+        val meta = identityDao.get() ?: throw IdentityStorageException.Corrupted("No local identity exists.")
+        val name = displayName.trim().take(100)
+        val canonical = if (handle.isBlank()) {
+            ""
+        } else {
+            com.codeyantra.armorchat.domain.identity.ArmorChatHandle.parseOrThrow(handle).canonical
+        }
+        identityDao.updateProfile(name, canonical)
+        unused(meta)
+    }
+
+    private fun unused(value: Any?) = Unit
+
     private fun IdentityEntity.toDomain() = UserIdentity(
         armorChatId = armorChatId,
         publicIdentityKey = publicIdentityKey,
         createdAtEpochMs = createdAtEpochMs,
         version = version,
+        displayName = displayName,
+        handle = handle,
     )
 
     private fun UserIdentity.toEntity() = IdentityEntity(
@@ -186,5 +195,7 @@ class IdentityLocalDataSource @Inject constructor(
         publicIdentityKey = publicIdentityKey,
         createdAtEpochMs = createdAtEpochMs,
         version = version,
+        displayName = displayName,
+        handle = handle,
     )
 }

@@ -4,17 +4,10 @@ Thank you for your interest in ArmorChat, a project of CodeYantra Technologies.
 
 ## Before you start
 
-This is a clean-room Android implementation. Do **not** copy source, resources,
-protocol constants, database schemas, or implementation details from:
-
-- BChat
-- Session
-- Signal / WhisperSystems trees used as implementation sources
-- the previous GPL-derived ArmorChat repository
-
-Those trees may be used later as behavioral reference only. Mentions of BChat,
-Session, or GPL in project docs are **do-not-copy** clean-room warnings — not
-permission to relicense or import that code.
+Please keep contributions original to this project. Do **not** copy source,
+resources, protocol constants, database schemas, or implementation details from
+other projects or external implementations. Maintain the project’s clean-room
+architecture and keep changes aligned with the existing design boundaries.
 
 ## Architecture
 
@@ -31,17 +24,17 @@ Transport must remain replaceable through `MessageTransport`.
 
 ## What this phase is
 
-Phases 0–1C cover the application shell, local identity, encrypted backup, and
-verified contact exchange. Please do **not** submit:
+Phases 0–1D.2 cover the application shell, local identity, encrypted backup,
+verified contact exchange, the isolated MLS harness, and the CodeYantra
+Privacy Relay foundation (`android/relay/`). Please do **not** submit:
 
 - A custom encryption protocol for messaging sessions
-- Relay / WebSocket / FCM implementations
+- FCM, WebSocket wake hints, or enabling chat send / `CryptoEngine`
 - Calls, WebRTC, mesh, or onion routing
 - Telemetry or analytics
 - Payment integration
 - Hard-coded secrets or API keys
 - Debug backdoors
-- Copied Signal / Session / BChat source
 
 ## Code style
 

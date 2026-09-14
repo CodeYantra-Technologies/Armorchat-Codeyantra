@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
+    alias(libs.plugins.google.services)
 }
 
 android {
@@ -15,12 +16,16 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "0.3.0-chat-ui"
+        versionName = "0.5.8-shared-mls"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "BRAND_OWNER", "\"CodeYantra Technologies\"")
         buildConfigField("String", "TRUST_LAYER", "\"Veltrix\"")
+
+        ndk {
+            abiFilters.addAll(listOf("arm64-v8a", "x86_64", "armeabi-v7a"))
+        }
     }
 
     buildTypes {
@@ -30,10 +35,12 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            buildConfigField("boolean", "TWO_PHONE_TEST", "false")
         }
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
+            buildConfigField("boolean", "TWO_PHONE_TEST", "true")
         }
     }
 
@@ -49,6 +56,12 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("src/main/jniLibs")
+        }
     }
 
     testOptions {
@@ -81,6 +94,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.lifecycle.process)
 
     implementation(libs.androidx.navigation.compose)
 
@@ -94,6 +108,11 @@ dependencies {
 
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.androidx.biometric)
+
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
+
     implementation(libs.tink.android)
     implementation(libs.androidx.camera.camera2)
     implementation(libs.androidx.camera.lifecycle)
@@ -114,4 +133,28 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.truth)
     testImplementation(libs.kotlinx.coroutines.test)
+}
+
+// Host JNI feasibility tests use the same Rust source, compiled for the host JVM.
+val buildHostMessagingJni by tasks.registering(Exec::class) {
+    workingDir(rootProject.file("native/armorchat-vodozemac"))
+    commandLine("cargo", "build", "--locked")
+}
+val buildHostMlsrsJni by tasks.registering(Exec::class) {
+    workingDir(rootProject.file("native/armorchat-mlsrs"))
+    commandLine("cargo", "build", "--locked")
+}
+tasks.withType<Test>().configureEach {
+    val paths = mutableListOf<String>()
+    if (providers.gradleProperty("messagingJniTests").isPresent) {
+        dependsOn(buildHostMessagingJni)
+        paths += rootProject.file("native/armorchat-vodozemac/target/debug").absolutePath
+    }
+    if (providers.gradleProperty("twoPhoneTests").isPresent) {
+        dependsOn(buildHostMlsrsJni)
+        paths += rootProject.file("native/armorchat-mlsrs/target/debug").absolutePath
+    }
+    if (paths.isNotEmpty()) {
+        systemProperty("java.library.path", paths.joinToString(System.getProperty("path.separator")))
+    }
 }

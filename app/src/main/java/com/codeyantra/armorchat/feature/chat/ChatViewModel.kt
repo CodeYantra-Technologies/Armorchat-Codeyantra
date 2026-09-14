@@ -1,17 +1,28 @@
 package com.codeyantra.armorchat.feature.chat
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.codeyantra.armorchat.core.network.MessageTransport
+import com.codeyantra.armorchat.core.network.NetworkAvailability
 import com.codeyantra.armorchat.domain.identity.ArmorChatId
+import com.codeyantra.armorchat.domain.model.AttachmentMetadata
 import com.codeyantra.armorchat.domain.model.Contact
 import com.codeyantra.armorchat.domain.model.Conversation
 import com.codeyantra.armorchat.domain.model.Message
+import com.codeyantra.armorchat.domain.model.MessageStatus
+import com.codeyantra.armorchat.domain.model.MessageType
 import com.codeyantra.armorchat.domain.repository.ContactRepository
 import com.codeyantra.armorchat.domain.repository.ConversationRepository
 import com.codeyantra.armorchat.domain.repository.MessageRepository
 import com.codeyantra.armorchat.domain.repository.SendTextResult
+import com.codeyantra.armorchat.messaging.ChatMessagingController
+import com.codeyantra.armorchat.messaging.ReplyMetadata
+import com.codeyantra.armorchat.messaging.SecureSessionState
+import com.codeyantra.armorchat.messaging.SecureSessionView
+import com.codeyantra.armorchat.notification.ArmorChatNotificationManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -29,9 +40,11 @@ data class ChatUiState(
     val contact: Contact? = null,
     val messages: List<Message> = emptyList(),
     val draft: String = "",
-    val transportAvailable: Boolean = false,
+    val session: SecureSessionView = SecureSessionView(),
+    val network: NetworkAvailability = NetworkAvailability(),
     val notice: String? = null,
     val loading: Boolean = true,
+    val scanningRoute: Boolean = false,
 ) {
     val displayName: String
         get() = contact?.displayName?.takeIf { it.isNotBlank() }
@@ -41,86 +54,260 @@ data class ChatUiState(
     val shortArmorChatId: String?
         get() = contact?.armorChatId?.let { ArmorChatId.shortDisplay(it) }
 
-    /** Send stays disabled until a real transport exists. */
+    val contactHandle: String?
+        get() = contact?.handleDisplay
+
+    val networkUnavailable: Boolean
+        get() = network.blocksNetwork
+
+    val sessionReady: Boolean
+        get() = session.state == SecureSessionState.ESTABLISHED && !networkUnavailable
+
+    /** Send stays disabled until a verified MLS session exists and policy is ACTIVE. */
     val canSend: Boolean
-        get() = transportAvailable && draft.trim().isNotEmpty() && conversation != null
+        get() = sessionReady && conversation != null
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
-    conversationRepository: ConversationRepository,
+    private val conversationRepository: ConversationRepository,
     private val messageRepository: MessageRepository,
     contactRepository: ContactRepository,
-    transport: MessageTransport,
+    private val messaging: ChatMessagingController,
+    private val notificationManager: ArmorChatNotificationManager? = null,
 ) : ViewModel() {
     private val conversationId: String = checkNotNull(savedStateHandle["conversationId"])
 
     private val draft = MutableStateFlow("")
     private val notice = MutableStateFlow<String?>(null)
+    private val scanning = MutableStateFlow(false)
+
+    var replyingToMessage by mutableStateOf<Message?>(null)
+        private set
+    var highlightedMessageId by mutableStateOf<String?>(null)
+        private set
+    var messageForInfo by mutableStateOf<Message?>(null)
+        private set
+
+    fun setReplyingTo(message: Message?) {
+        replyingToMessage = message
+    }
+
+    fun highlightMessage(messageId: String?) {
+        highlightedMessageId = messageId
+    }
+
+    fun setInfoMessage(message: Message?) {
+        messageForInfo = message
+    }
+
+    fun showNotice(msg: String) {
+        notice.value = msg
+    }
+
+    private fun buildReplyMetadata(): ReplyMetadata? {
+        val msg = replyingToMessage ?: return null
+        val contactName = core.value.contact?.displayName?.ifBlank { "Contact" } ?: "Contact"
+        val senderName = if (msg.isOutgoing) "You" else contactName
+        val kind = msg.type.name.lowercase()
+        val preview = when (msg.type) {
+            MessageType.TEXT -> msg.localPlaintext ?: "Message"
+            MessageType.IMAGE -> "Photo"
+            MessageType.VOICE -> "Voice message"
+            MessageType.DOCUMENT -> {
+                val meta = AttachmentMetadata.parseOrNull(msg.localPlaintext)
+                meta?.originalName?.ifBlank { "Document" } ?: "Document"
+            }
+        }
+        return ReplyMetadata(
+            messageId = msg.id,
+            senderName = senderName,
+            kind = kind,
+            preview = preview,
+        )
+    }
 
     private val conversationFlow = conversationRepository.observeConversation(conversationId)
     private val contactFlow = conversationFlow.flatMapLatest { conversation ->
         val contactId = conversation?.contactId
         if (contactId == null) flowOf(null) else contactRepository.observeContact(contactId)
     }
+    private val sessionFlow = contactFlow.flatMapLatest { contact ->
+        val contactId = contact?.id
+        if (contactId == null) flowOf(SecureSessionView()) else messaging.observeSession(contactId)
+    }
 
     private data class ChatCore(
         val conversation: Conversation?,
         val contact: Contact?,
         val messages: List<Message>,
+        val session: SecureSessionView,
+        val network: NetworkAvailability,
     )
 
     private val core = combine(
         conversationFlow,
         contactFlow,
         messageRepository.observeMessages(conversationId),
-    ) { conversation, contact, messages ->
-        ChatCore(conversation, contact, messages)
-    }
+        sessionFlow,
+        messaging.network,
+    ) { conv, contact, messages, session, network ->
+        ChatCore(conv, contact, messages, session, network)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.Eagerly,
+        initialValue = ChatCore(null, null, emptyList(), SecureSessionView(), NetworkAvailability()),
+    )
 
     val state: StateFlow<ChatUiState> = combine(
         core,
         draft,
         notice,
-        transport.isAvailable,
-    ) { chatCore, draftText, noticeText, available ->
+        scanning,
+    ) { c, d, n, s ->
         ChatUiState(
-            conversation = chatCore.conversation,
-            contact = chatCore.contact,
-            messages = chatCore.messages,
-            draft = draftText,
-            transportAvailable = available,
-            notice = noticeText,
+            conversation = c.conversation,
+            contact = c.contact,
+            messages = c.messages,
+            draft = d,
+            session = c.session,
+            network = c.network,
+            notice = n,
             loading = false,
+            scanningRoute = s,
         )
     }.stateIn(
-        viewModelScope,
-        SharingStarted.Eagerly,
-        ChatUiState(),
+        scope = viewModelScope,
+        started = SharingStarted.Eagerly,
+        initialValue = ChatUiState(),
     )
 
-    fun onDraftChange(value: String) {
-        if (value.length <= 8_000) draft.value = value
+    private var chatVisible = false
+
+    init {
+        // initialized via flow emission
+    }
+
+    fun onDraftChange(newDraft: String) {
+        draft.value = newDraft
     }
 
     fun clearNotice() {
         notice.value = null
     }
 
-    fun send() {
-        val text = draft.value
-        viewModelScope.launch {
-            when (messageRepository.sendText(conversationId, text)) {
-                SendTextResult.TransportUnavailable -> {
-                    notice.value = "Messaging is not available yet. Your message was not sent."
-                }
-                SendTextResult.Empty -> Unit
-                SendTextResult.ConversationMissing -> {
-                    notice.value = "Conversation is missing on this device."
-                }
+    fun setChatVisible(visible: Boolean) {
+        chatVisible = visible
+        if (visible) {
+            viewModelScope.launch {
+                markVisibleInbound()
+            }
+        } else {
+            notificationManager?.setActiveConversation(null)
+        }
+    }
+
+    suspend fun markVisibleInbound() {
+        notificationManager?.setActiveConversation(conversationId)
+        val unread = state.value.messages.filter { !it.isOutgoing && it.status != MessageStatus.READ }
+        if (unread.isNotEmpty()) {
+            for (message in unread) {
+                messaging.markOpened(conversationId, message.id)
             }
         }
+    }
+
+    fun syncNow() {
+        val contactId = state.value.contact?.id ?: return
+        viewModelScope.launch {
+            messaging.syncContact(contactId)
+            if (chatVisible) markVisibleInbound()
+        }
+    }
+
+    fun send() {
+        val text = draft.value.trim()
+        if (text.isEmpty()) return
+        draft.value = ""
+        val replyMeta = buildReplyMetadata()
+        replyingToMessage = null
+        viewModelScope.launch {
+            when (messaging.sendText(conversationId, text, replyMeta)) {
+                is SendTextResult.Queued -> syncNow()
+                SendTextResult.Empty -> notice.value = "Cannot send empty message"
+                SendTextResult.ConversationMissing -> notice.value = "Conversation missing"
+                SendTextResult.NetworkUnavailable -> notice.value = "Message not sent — network unavailable"
+                SendTextResult.SessionNotReady -> notice.value = "Message not sent — session not ready"
+                SendTextResult.TransportUnavailable -> notice.value = "Message not sent — transport unavailable"
+            }
+        }
+    }
+
+    fun sendAttachment(
+        context: android.content.Context,
+        uri: android.net.Uri,
+        originalName: String,
+        mimeType: String,
+        sizeBytes: Long,
+    ) {
+        val isImage = mimeType.startsWith("image/")
+        val maxSize = if (isImage) com.codeyantra.armorchat.core.config.AttachmentConfig.MAX_IMAGE_SIZE_BYTES else com.codeyantra.armorchat.core.config.AttachmentConfig.MAX_DOCUMENT_SIZE_BYTES
+        if (sizeBytes > maxSize) {
+            val limitMb = maxSize / (1024 * 1024)
+            notice.value = "File is too large. Limit is ${limitMb}MB."
+            return
+        }
+
+        val replyMeta = buildReplyMetadata()
+        replyingToMessage = null
+
+        viewModelScope.launch {
+            val fileBytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                try {
+                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: uri.path?.let { java.io.File(it).takeIf { f -> f.exists() }?.readBytes() }
+                } catch (e: Exception) {
+                    null
+                }
+            }
+
+            if (fileBytes == null || fileBytes.isEmpty()) {
+                notice.value = "Unable to read attachment file."
+                return@launch
+            }
+
+            when (messaging.sendAttachment(conversationId, fileBytes, originalName, mimeType, isImage, replyMeta)) {
+                is SendTextResult.Queued -> syncNow()
+                SendTextResult.Empty -> notice.value = "Attachment is empty"
+                SendTextResult.ConversationMissing -> notice.value = "Conversation missing"
+                SendTextResult.NetworkUnavailable -> notice.value = "Network unavailable"
+                SendTextResult.SessionNotReady -> notice.value = "Session not ready"
+                SendTextResult.TransportUnavailable -> notice.value = "Transport unavailable"
+            }
+        }
+    }
+
+    fun downloadAttachment(
+        metadata: com.codeyantra.armorchat.domain.model.AttachmentMetadata,
+        onDone: (Boolean) -> Unit,
+    ) {
+        viewModelScope.launch {
+            val success = messaging.downloadAttachmentBlob(
+                conversationId = conversationId,
+                attachmentId = metadata.attachmentId,
+                blobId = metadata.blobId,
+                wrappedKeyBase64Url = metadata.wrappedKeyBase64Url,
+                ivBase64Url = metadata.ivBase64Url,
+                sha256DigestHex = metadata.ciphertextDigestSha256,
+            )
+            onDone(success)
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        notificationManager?.setActiveConversation(null)
     }
 }

@@ -44,4 +44,12 @@ interface SecureIdentityKeyStore {
      * @return raw 32-byte Ed25519 public key
      */
     suspend fun importSerializedKeyset(serializedKeyset: ByteArray): ByteArray
+
+    /**
+     * Sign an already-framed ArmorChat context message
+     * (`ASCII(context) || 0x00 || JCS(body)`). Allowed contexts only.
+     */
+    suspend fun signFramed(context: String, framed: ByteArray): ByteArray {
+        throw UnsupportedOperationException("identity framing signature is not available")
+    }
 }

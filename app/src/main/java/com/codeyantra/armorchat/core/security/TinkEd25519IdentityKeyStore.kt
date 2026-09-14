@@ -24,8 +24,7 @@ import kotlinx.coroutines.withContext
  *
  * Path: noBackupFilesDir/identity/ed25519_identity.v1.enc
  *
- * Reserved (not implemented): noBackupFilesDir/identity/x25519_session.v1.enc
- * for future session / ECDH keys — architecturally separate from Ed25519.
+ * The isolated messaging store uses a separate Keystore wrapping key and database.
  */
 @Singleton
 class TinkEd25519IdentityKeyStore @Inject constructor(
@@ -102,6 +101,37 @@ class TinkEd25519IdentityKeyStore @Inject constructor(
             } finally {
                 clearKeyset.fill(0)
             }
+        }
+    }
+
+    override suspend fun signFramed(context: String, framed: ByteArray): ByteArray = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            require(context in com.codeyantra.armorchat.messaging.ArmorChatContexts.allowed) { "unsupported signing context" }
+            val prefix = context.toByteArray(Charsets.US_ASCII) + 0
+            require(framed.size <= 8192 + prefix.size)
+            require(framed.size >= prefix.size && framed.copyOf(prefix.size).contentEquals(prefix))
+            ensureTinkRegistered()
+            val serialized = loadSerializedKeyset()
+            try {
+                val handle = TinkProtoKeysetFormat.parseKeyset(serialized, InsecureSecretKeyAccess.get())
+                com.codeyantra.armorchat.crypto.RawIdentitySignature.sign(handle, framed)
+            } finally {
+                serialized.fill(0)
+            }
+        }
+    }
+
+    /** Domain-separated raw Ed25519 device credential signing for the isolated harness. */
+    suspend fun signMessagingDevice(signingBytes: ByteArray): ByteArray = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            val prefix = "ArmorChat/device/v1\u0000".toByteArray(Charsets.US_ASCII)
+            require(signingBytes.size <= 4096 && signingBytes.take(prefix.size).toByteArray().contentEquals(prefix))
+            ensureTinkRegistered()
+            val serialized = loadSerializedKeyset()
+            try {
+                val handle = TinkProtoKeysetFormat.parseKeyset(serialized, InsecureSecretKeyAccess.get())
+                com.codeyantra.armorchat.crypto.RawIdentitySignature.sign(handle, signingBytes)
+            } finally { serialized.fill(0) }
         }
     }
 

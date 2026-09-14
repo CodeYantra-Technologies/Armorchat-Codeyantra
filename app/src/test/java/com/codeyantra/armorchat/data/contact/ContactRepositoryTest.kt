@@ -26,6 +26,8 @@ class ContactRepositoryTest {
         override fun observeById(id: String) = rows.map { list -> list.find { it.id == id } }
         override suspend fun findById(id: String) = rows.value.find { it.id == id }
         override suspend fun findByArmorChatId(armorChatId: String) = rows.value.find { it.armorChatId == armorChatId }
+        override suspend fun findByPublicIdentityKey(publicIdentityKey: String) =
+            rows.value.find { it.publicIdentityKey == publicIdentityKey }
         override suspend fun localArmorChatId() = localId
         override suspend fun insert(contact: ContactEntity): Long {
             race?.let { rows.value += it; race = null }
@@ -34,6 +36,23 @@ class ContactRepositoryTest {
             return 1
         }
         override suspend fun rename(id: String, name: String) { rows.value = rows.value.map { if (it.id == id) it.copy(displayName = name) else it } }
+        override suspend fun deleteById(id: String) { rows.value = rows.value.filter { it.id != id } }
+        override suspend fun updateSignedProfile(
+            id: String,
+            displayName: String,
+            handle: String?,
+            previousHandle: String?,
+            changedAt: Long?,
+        ) {
+            rows.value = rows.value.map {
+                if (it.id == id) it.copy(
+                    displayName = displayName,
+                    handle = handle,
+                    previousHandle = previousHandle,
+                    handleChangedAtEpochMs = changedAt,
+                ) else it
+            }
+        }
     }
     private fun repository(dao: MemoryDao, dispatcher: TestDispatcher) = ContactRepositoryImpl(dao, AppDispatchers(dispatcher, dispatcher, dispatcher))
 

@@ -9,6 +9,12 @@ captures/
 *.dex
 *.class
 
+# Node (relay test tooling)
+node_modules/
+
+# Rust build artifacts
+target/
+
 # Local SDK path — never commit
 local.properties
 
@@ -32,7 +38,9 @@ keystore.properties
 # Secrets
 .env
 .env.*
-google-services.json
+
+# Test fixture private key — never commit real or throwaway private keys
+relay/test/service-policy-test.pem
 
 # Test / lint
 lint/intermediates/

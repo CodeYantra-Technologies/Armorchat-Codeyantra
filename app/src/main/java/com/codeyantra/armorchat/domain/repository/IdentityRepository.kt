@@ -8,6 +8,8 @@ interface IdentityRepository {
     suspend fun getIdentity(): UserIdentity?
     /** Idempotent: returns existing decryptable identity or creates one. */
     suspend fun createIdentity(): UserIdentity
+    /** Updates display name/handle only. Never changes ac1 or the Ed25519 key. */
+    suspend fun updateProfile(displayName: String, handle: String)
     suspend fun exportIdentityBackup(password: CharArray): ByteArray
     suspend fun restoreIdentityBackup(backupBytes: ByteArray, password: CharArray): UserIdentity
 }

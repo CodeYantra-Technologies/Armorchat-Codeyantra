@@ -20,7 +20,7 @@
     <string name="settings_theme_system">System</string>
     <string name="settings_theme_dark">Dark</string>
     <string name="settings_theme_light">Light</string>
-    <string name="settings_my_identity">My ArmorChat ID</string>
+    <string name="settings_my_identity">My ArmorChat</string>
     <string name="settings_about">About ArmorChat</string>
     <string name="settings_support">Support ArmorChat</string>
     <string name="about_developed">Developed by CodeYantra Technologies</string>
@@ -29,12 +29,12 @@
     <string name="support_title">Support ArmorChat</string>
     <string name="support_body">A way to support development will be added here. No payments are collected in this version.</string>
     <string name="identity_create_title">Create identity</string>
-    <string name="identity_create_body">ArmorChat will generate a local Ed25519 identity key on this device. Your private key never leaves the device and is protected by the Android Keystore.</string>
+    <string name="identity_create_body">Choose a name and handle. ArmorChat still protects you with a local Ed25519 key that never leaves this device.</string>
     <string name="identity_creating">Creating secure identity…</string>
     <string name="identity_created_title">Identity created</string>
-    <string name="identity_created_subtitle">This is your ArmorChat ID. Share it so trusted contacts can find you.</string>
+    <string name="identity_created_subtitle">Share your name and handle. Contacts scan your compact QR from My ArmorChat.</string>
     <string name="identity_your_id">Your ArmorChat ID</string>
-    <string name="identity_my_id_title">My ArmorChat ID</string>
+    <string name="identity_my_id_title">My ArmorChat</string>
     <string name="identity_security_line">Your private identity key stays on this device.</string>
     <string name="identity_copied">ArmorChat ID copied</string>
     <string name="identity_missing">No local identity found on this device.</string>
@@ -59,7 +59,15 @@
     <string name="action_share_id">Share ID</string>
     <string name="cd_brand_mark">ArmorChat mark</string>
     <string name="cd_identity_qr">ArmorChat identity QR code</string>
-    <string name="chat_identity_pinned">ArmorChat identity pinned</string>
+    <string name="chat_identity_pinned">Secure chat</string>
     <string name="chat_empty_title">No messages yet</string>
-    <string name="chat_empty_body">Messages will appear here once messaging transport is available. This screen does not claim end-to-end encryption yet.</string>
+    <string name="chat_empty_body">Securing chat… Once the session connects, you can send end-to-end encrypted messages here.</string>
+    <string name="chat_empty_ready">Send a message. Delivery and read depend on authenticated receipts, not the relay.</string>
+    <string name="network_unavailable_title">ArmorChat network temporarily unavailable</string>
+    <string name="network_unavailable_body">Your identity, keys, and local messages stay on this device. Queued messages wait until the network is available again.</string>
+    <string name="settings_developer">Developer</string>
+    <string name="settings_mls_harness">Two-phone MLS harness</string>
+    <string name="settings_mls_harness_body">Troubleshooting only. Normal chat does not use this screen.</string>
+    <string name="notification_channel_messages_name">Messages</string>
+    <string name="notification_channel_messages_desc">Notifications for incoming end-to-end encrypted messages</string>
 </resources>

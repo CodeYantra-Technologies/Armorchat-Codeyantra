@@ -7,6 +7,10 @@ import com.codeyantra.armorchat.core.common.AppDispatchers
 import com.codeyantra.armorchat.core.database.ArmorChatDatabase
 import com.codeyantra.armorchat.core.database.CONTACT_MIGRATION_2_3
 import com.codeyantra.armorchat.core.database.CONVERSATION_MIGRATION_3_4
+import com.codeyantra.armorchat.core.database.HANDLE_MIGRATION_6_7
+import com.codeyantra.armorchat.core.database.MESSAGING_MIGRATION_4_5
+import com.codeyantra.armorchat.core.database.MESSAGING_MIGRATION_5_6
+import com.codeyantra.armorchat.core.database.SESSION_MIGRATION_7_8
 import com.codeyantra.armorchat.core.database.entity.ContactEntity
 import com.codeyantra.armorchat.core.network.NoOpMessageTransport
 import com.codeyantra.armorchat.domain.model.Contact
@@ -33,7 +37,7 @@ class ConversationRepositoryTest {
     private val clock = AppClock { 1_700_000_000_000L }
 
     private fun open(name: String) = Room.databaseBuilder(context, ArmorChatDatabase::class.java, name)
-        .addMigrations(CONTACT_MIGRATION_2_3, CONVERSATION_MIGRATION_3_4)
+        .addMigrations(CONTACT_MIGRATION_2_3, CONVERSATION_MIGRATION_3_4, MESSAGING_MIGRATION_4_5, MESSAGING_MIGRATION_5_6, HANDLE_MIGRATION_6_7, SESSION_MIGRATION_7_8)
         .build()
 
     private fun contact(id: String, name: String) = Contact(

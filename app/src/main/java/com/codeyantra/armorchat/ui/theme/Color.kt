@@ -2,20 +2,43 @@ package com.codeyantra.armorchat.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-val Navy950 = Color(0xFF070B14)
-val Navy900 = Color(0xFF0E1626)
-val Navy800 = Color(0xFF151E32)
-val Navy700 = Color(0xFF1C2740)
-val AccentBlue = Color(0xFF3BA0FF)
-val AccentBlueDim = Color(0xFF1A4F86)
-val Silver100 = Color(0xFFE8EEF7)
-val Silver300 = Color(0xFFB7C3D6)
-val MutedBlue = Color(0xFF8B9BB4)
-val Hairline = Color(0x1A3BA0FF)
-val Danger = Color(0xFFC45B5B)
+// Light Theme Palette
+val LightBackground = Color(0xFFF7FAFC)
+val LightSurface = Color(0xFFFFFFFF)
+val LightSurfaceVariant = Color(0xFFEAF3F8)
+val LightPrimary = Color(0xFF0077B6)
+val LightSecondary = Color(0xFF0066CC)
+val LightTertiary = Color(0xFF008F7A)
+val LightOnBackground = Color(0xFF0A1929)
+val LightOnSurface = Color(0xFF102A43)
+val LightOnSurfaceVariant = Color(0xFF526D82)
+val LightOutline = Color(0xFFB8CAD8)
+val LightOutlineVariant = Color(0xFFD0DFEC)
 
-val Paper50 = Color(0xFFF4F6FA)
-val Paper100 = Color(0xFFE8EDF5)
-val Ink950 = Color(0xFF10141C)
-val Ink700 = Color(0xFF3A4558)
-val Ink500 = Color(0xFF667089)
+// Dark Theme Palette
+val DarkBackground = Color(0xFF07111F)
+val DarkSurface = Color(0xFF0C1A29)
+val DarkSurfaceVariant = Color(0xFF13283A)
+val DarkPrimary = Color(0xFF29C5F6)
+val DarkSecondary = Color(0xFF4D8DFF)
+val DarkTertiary = Color(0xFF32D6AE)
+val DarkOnBackground = Color(0xFFF2F7FB)
+val DarkOnSurface = Color(0xFFF2F7FB)
+val DarkOnSurfaceVariant = Color(0xFFA8BDCE)
+val DarkOutline = Color(0xFF294257)
+val DarkOutlineVariant = Color(0xFF1B2E42)
+
+val ErrorRed = Color(0xFFFF6B6B)
+
+// Legacy alias mappings for backward compatibility
+val Navy950 = DarkBackground
+val Navy900 = DarkSurface
+val Navy800 = DarkSurfaceVariant
+val Navy700 = DarkOutline
+val AccentBlue = DarkPrimary
+val AccentBlueDim = Color(0xFF0D374C)
+val Silver100 = DarkOnBackground
+val Silver300 = DarkOnSurfaceVariant
+val MutedBlue = DarkOnSurfaceVariant
+val Hairline = DarkOutline
+val Danger = ErrorRed

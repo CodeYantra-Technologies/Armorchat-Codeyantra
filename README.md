@@ -2,9 +2,8 @@
 
 ArmorChat is a privacy-focused messaging application by CodeYantra Technologies.
 
-This repository is a **fresh implementation** of ArmorChat and is **not** based on
-the old BChat-derived ArmorChat source tree. The previous BChat-derived ArmorChat
-repository is a separate legacy codebase and is not this tree.
+This repository is the current fresh implementation of ArmorChat. It is built for
+secure local identity, encrypted backup, and verified contact exchange.
 
 **Secured by Veltrix** — Veltrix is the backend trust/security layer.
 It is not a surveillance layer.
@@ -63,7 +62,8 @@ Future transports are expected to implement `MessageTransport`:
 - `PrivateRoutingTransport`
 - `MeshTransport`
 
-Those implementations are **not** in this phase.
+`CodeYantraRelayTransport` exists for Phase 1D.2 but is **not** Hilt-bound.
+Production still uses `NoOpMessageTransport`; chat send stays disabled.
 
 ## Stack
 
@@ -128,17 +128,13 @@ user messages — including in future phases.
 
 ## License
 
-This repository is a fresh implementation of ArmorChat and is licensed under the
-Apache License 2.0.
+This repository is licensed under the Apache License 2.0.
 
 See:
 
 - [LICENSE](LICENSE) — Apache License Version 2.0 (full text)
 - [NOTICE](NOTICE) — copyright and required third-party notices
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) — dependency / asset inventory
-
-This is **not** a relicensing of any GPL, BChat, or Session codebase. The previous
-BChat-derived ArmorChat repository remains a separate legacy tree.
 
 ### Trademarks
 

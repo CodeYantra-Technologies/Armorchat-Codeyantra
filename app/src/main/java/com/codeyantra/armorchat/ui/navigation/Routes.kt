@@ -8,9 +8,13 @@ object Routes {
     const val RestoreIdentity = "identity/restore"
     const val Home = "home"
     const val MyIdentity = "identity/mine"
+    const val PrivacySecurity = "settings/privacy_security"
+    const val NetworkPrivacy = "settings/network_privacy"
+    const val EmergencyMesh = "settings/emergency_mesh"
     const val About = "about"
     const val OpenSourceLicenses = "about/open_source_licenses"
     const val Support = "support"
+    const val TwoPhoneTest = "debug/two_phone"
     const val Chat = "chat/{conversationId}"
     const val ContactDetail = "contact/{contactId}"
 

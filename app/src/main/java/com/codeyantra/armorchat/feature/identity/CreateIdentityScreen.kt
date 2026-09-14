@@ -15,18 +15,23 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.codeyantra.armorchat.R
+import com.codeyantra.armorchat.domain.identity.ArmorChatHandle
 import com.codeyantra.armorchat.domain.model.UserIdentity
 
 @Composable
@@ -37,16 +42,13 @@ fun CreateIdentityRoute(
 ) {
     val creationState by viewModel.creationState.collectAsStateWithLifecycle()
     val busy = creationState is IdentityCreationState.Creating
-    val canCreate = creationState is IdentityCreationState.Idle ||
-        creationState is IdentityCreationState.RecoverableError
     val error = (creationState as? IdentityCreationState.RecoverableError)?.message
         ?: (creationState as? IdentityCreationState.FatalStorageError)?.message
     CreateIdentityScreen(
         busy = busy,
-        canCreate = canCreate,
         error = error,
         onBack = onBack,
-        onContinue = { viewModel.create(onCreated) },
+        onContinue = { name, handle -> viewModel.create(name, handle, onCreated) },
     )
 }
 
@@ -54,12 +56,15 @@ fun CreateIdentityRoute(
 @Composable
 fun CreateIdentityScreen(
     busy: Boolean,
-    canCreate: Boolean = !busy,
     error: String?,
     onBack: () -> Unit,
-    onContinue: () -> Unit,
+    onContinue: (displayName: String, handle: String) -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
+    var displayName by rememberSaveable { mutableStateOf("") }
+    var handle by rememberSaveable { mutableStateOf("") }
+    val parsedHandle = ArmorChatHandle.parse(handle)
+    val canCreate = !busy && displayName.trim().isNotEmpty() && parsedHandle != null
     Scaffold(
         containerColor = colors.background,
         topBar = {
@@ -88,21 +93,61 @@ fun CreateIdentityScreen(
                 style = MaterialTheme.typography.bodyLarge,
                 color = colors.onSurfaceVariant,
             )
+            Spacer(Modifier.height(20.dp))
+            OutlinedTextField(
+                value = displayName,
+                onValueChange = {
+                    if (it.length <= 100) {
+                        displayName = it
+                        if (handle.isBlank() || ArmorChatHandle.suggest(handle.removePrefix("@")) == null) {
+                            ArmorChatHandle.suggest(it)?.let { suggested -> handle = suggested }
+                        }
+                    }
+                },
+                label = { Text("Your name") },
+                singleLine = true,
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = if (handle.startsWith("@") || handle.isBlank()) handle else "@$handle",
+                onValueChange = { value ->
+                    handle = value.removePrefix("@").lowercase().take(ArmorChatHandle.MAX_LENGTH)
+                },
+                label = { Text("ArmorChat handle") },
+                placeholder = { Text("@neeraj-veltrix") },
+                supportingText = {
+                    Text(
+                        if (handle.isBlank()) {
+                            "Letters, numbers, and hyphens. This is not your secure identity."
+                        } else if (parsedHandle == null) {
+                            "Use 3–30 characters: a–z, 0–9, hyphen."
+                        } else {
+                            parsedHandle.display()
+                        },
+                    )
+                },
+                isError = handle.isNotBlank() && parsedHandle == null,
+                singleLine = true,
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth(),
+            )
             if (error != null) {
                 Spacer(Modifier.height(16.dp))
                 Text(text = error, color = colors.error, style = MaterialTheme.typography.bodyMedium)
             }
             Spacer(Modifier.weight(1f))
             Button(
-                onClick = onContinue,
+                onClick = { parsedHandle?.let { onContinue(displayName.trim(), it.canonical) } },
                 enabled = canCreate,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp),
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = colors.onBackground,
-                    contentColor = colors.background,
+                    containerColor = colors.primary,
+                    contentColor = colors.onPrimary,
                 ),
             ) {
                 Text(

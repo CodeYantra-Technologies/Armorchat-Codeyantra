@@ -37,6 +37,10 @@ private class RestoreFakeIdentityRepository : IdentityRepository {
         return identity
     }
 
+    override suspend fun updateProfile(displayName: String, handle: String) {
+        state.value = (state.value ?: identity).copy(displayName = displayName, handle = handle)
+    }
+
     override suspend fun exportIdentityBackup(password: CharArray): ByteArray = byteArrayOf(1, 2, 3)
 
     override suspend fun restoreIdentityBackup(

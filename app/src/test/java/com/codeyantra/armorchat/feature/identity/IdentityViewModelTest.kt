@@ -37,11 +37,26 @@ class IdentityViewModelTest {
     @Test
     fun doubleTapCreatesOnceAndPublishesSuccess() = runTest(dispatcher) {
         val repository = CountingIdentityRepository()
+        val fakeMessaging = object : com.codeyantra.armorchat.messaging.ChatMessagingController {
+            override val network = MutableStateFlow(com.codeyantra.armorchat.core.network.NetworkAvailability())
+            override fun observeSession(contactId: String) = kotlinx.coroutines.flow.flowOf(com.codeyantra.armorchat.messaging.SecureSessionView())
+            override suspend fun ensureProvisioned(contact: com.codeyantra.armorchat.domain.model.Contact) = Unit
+            override suspend fun getMyContactQrV2(): String? = null
+            override suspend fun importPeerContactV2(payload: com.codeyantra.armorchat.domain.identity.ContactQrV2) = com.codeyantra.armorchat.messaging.RouteImportResult.Rejected
+            override suspend fun importPeerRoute(raw: String, contactId: String?) = com.codeyantra.armorchat.messaging.RouteImportResult.Rejected
+            override fun localRouteQr(contactId: String) = null
+            override suspend fun sendText(conversationId: String, text: String) = com.codeyantra.armorchat.domain.repository.SendTextResult.TransportUnavailable
+            override suspend fun syncContact(contactId: String) = Unit
+            override suspend fun markOpened(conversationId: String, messageId: String) = Unit
+            override suspend fun refreshPolicy() = Unit
+        }
         val viewModel = IdentityViewModel(
             observeIdentity = ObserveIdentityUseCase(repository),
             createIdentity = CreateIdentityUseCase(repository),
             createIdentityBackup = CreateIdentityBackupUseCase(repository),
             restoreIdentity = RestoreIdentityUseCase(repository),
+            identityRepository = repository,
+            messaging = fakeMessaging,
         )
 
         viewModel.create {}
@@ -74,6 +89,10 @@ private class CountingIdentityRepository : IdentityRepository {
         createCount += 1
         state.value = identity
         return identity
+    }
+
+    override suspend fun updateProfile(displayName: String, handle: String) {
+        state.value = (state.value ?: identity).copy(displayName = displayName, handle = handle)
     }
 
     override suspend fun exportIdentityBackup(password: CharArray): ByteArray = byteArrayOf(1, 2, 3)

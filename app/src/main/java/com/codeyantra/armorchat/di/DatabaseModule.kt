@@ -27,10 +27,7 @@ object DatabaseModule {
             ArmorChatDatabase::class.java,
             "armorchat.db",
         )
-            .addMigrations(
-                com.codeyantra.armorchat.core.database.CONTACT_MIGRATION_2_3,
-                com.codeyantra.armorchat.core.database.CONVERSATION_MIGRATION_3_4,
-            )
+            .addMigrations(*com.codeyantra.armorchat.core.database.ARMORCHAT_MIGRATIONS)
             .fallbackToDestructiveMigrationFrom(dropAllTables = true, 1)
             .build()
     }
@@ -46,4 +43,12 @@ object DatabaseModule {
 
     @Provides
     fun messageDao(db: ArmorChatDatabase): MessageDao = db.messageDao()
+
+    @Provides
+    fun contactSessionDao(db: ArmorChatDatabase): com.codeyantra.armorchat.core.database.dao.ContactSessionDao =
+        db.contactSessionDao()
+
+    @Provides
+    fun localInviteDao(db: ArmorChatDatabase): com.codeyantra.armorchat.core.database.dao.LocalInviteDao =
+        db.localInviteDao()
 }

@@ -160,8 +160,8 @@ fun RestoreIdentityScreen(
                     .height(52.dp),
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = colors.onBackground,
-                    contentColor = colors.background,
+                    containerColor = colors.primary,
+                    contentColor = colors.onPrimary,
                 ),
             ) {
                 Text(
@@ -189,8 +189,8 @@ fun RestoreIdentityScreen(
                     .height(52.dp),
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = colors.onBackground,
-                    contentColor = colors.background,
+                    containerColor = colors.surfaceVariant,
+                    contentColor = colors.onSurfaceVariant,
                 ),
             ) {
                 Text(

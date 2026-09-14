@@ -2,6 +2,7 @@ package com.codeyantra.armorchat.feature.identity
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.codeyantra.armorchat.core.preferences.SettingsDataStore
 import com.codeyantra.armorchat.core.security.IdentityStorageException
 import com.codeyantra.armorchat.domain.identity.IdentityQrPayload
 import com.codeyantra.armorchat.domain.model.UserIdentity
@@ -12,12 +13,19 @@ import com.codeyantra.armorchat.domain.usecase.RestoreIdentityUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+
+sealed interface IdentityState {
+    data object Checking : IdentityState
+    data object NoIdentity : IdentityState
+    data class Ready(val identity: UserIdentity) : IdentityState
+    data class Error(val message: String) : IdentityState
+}
 
 sealed interface IdentityCreationState {
     data object Idle : IdentityCreationState
@@ -56,14 +64,26 @@ class IdentityViewModel @Inject constructor(
     private val createIdentity: CreateIdentityUseCase,
     private val createIdentityBackup: CreateIdentityBackupUseCase,
     private val restoreIdentity: RestoreIdentityUseCase,
+    private val identityRepository: com.codeyantra.armorchat.domain.repository.IdentityRepository,
+    private val messaging: com.codeyantra.armorchat.messaging.ChatMessagingController,
+    private val settingsDataStore: SettingsDataStore? = null,
 ) : ViewModel() {
 
     val identity: StateFlow<UserIdentity?> = observeIdentity()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    val aboutStatus: StateFlow<String> = (settingsDataStore?.aboutStatus ?: kotlinx.coroutines.flow.flowOf("Securing chats with ArmorChat"))
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "Securing chats with ArmorChat")
 
     val hasIdentity: StateFlow<Boolean> = identity
         .map { it != null }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val identityState: StateFlow<IdentityState> = identity
+        .map { user ->
+            if (user != null) IdentityState.Ready(user) else IdentityState.NoIdentity
+        }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, IdentityState.Checking)
 
     private val _creationState = MutableStateFlow<IdentityCreationState>(IdentityCreationState.Idle)
     val creationState: StateFlow<IdentityCreationState> = _creationState.asStateFlow()
@@ -74,13 +94,17 @@ class IdentityViewModel @Inject constructor(
     private val _restoreState = MutableStateFlow<IdentityRestoreState>(IdentityRestoreState.Idle)
     val restoreState: StateFlow<IdentityRestoreState> = _restoreState.asStateFlow()
 
-    fun create(onDone: (UserIdentity) -> Unit) {
+    fun create(
+        displayName: String = "",
+        handle: String = "",
+        onDone: (UserIdentity) -> Unit,
+    ) {
         if (!canStartCreation(_creationState.value)) return
         viewModelScope.launch {
             if (!canStartCreation(_creationState.value)) return@launch
             _creationState.value = IdentityCreationState.Creating
             IdentityDiagnostics.stage("ui-create", "started")
-            val result = createIdentity()
+            val result = createIdentity(displayName, handle)
             result.onSuccess { identity ->
                 _creationState.value = IdentityCreationState.Success(identity)
                 IdentityDiagnostics.stage("ui-create", "success, existed-or-created=true")
@@ -94,6 +118,36 @@ class IdentityViewModel @Inject constructor(
                 }
                 IdentityDiagnostics.stage("ui-create", "success=false, category=${err::class.simpleName}")
             }
+        }
+    }
+
+    suspend fun getMyContactQrV2(): String? = messaging.getMyContactQrV2()
+
+    suspend fun getMyContactQrV3(refresh: Boolean = false): String? {
+        com.codeyantra.armorchat.messaging.SafeLog.event("stage=QR_V3_START result=PASS")
+        return try {
+            val result = messaging.getMyContactQrV3(refresh)
+            if (result != null) {
+                com.codeyantra.armorchat.messaging.SafeLog.event("stage=QR_RETURNED_TO_UI result=PASS content_length=${result.length}")
+            } else {
+                com.codeyantra.armorchat.messaging.SafeLog.event("stage=QR_RETURNED_TO_UI result=FAIL")
+            }
+            result
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (err: Exception) {
+            com.codeyantra.armorchat.messaging.SafeLog.event("stage=QR_RETURNED_TO_UI result=FAIL exception=${err::class.java.name}")
+            throw err
+        }
+    }
+
+    fun saveProfile(displayName: String, handle: String, about: String, onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            runCatching {
+                identityRepository.updateProfile(displayName, handle)
+                settingsDataStore?.setAboutStatus(about)
+            }
+            onDone()
         }
     }
 

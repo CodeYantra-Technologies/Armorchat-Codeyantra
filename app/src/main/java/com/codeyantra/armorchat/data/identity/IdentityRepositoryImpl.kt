@@ -17,6 +17,9 @@ class IdentityRepositoryImpl @Inject constructor(
 
     override suspend fun createIdentity(): UserIdentity = local.createIdentity()
 
+    override suspend fun updateProfile(displayName: String, handle: String) =
+        local.updateProfile(displayName, handle)
+
     override suspend fun exportIdentityBackup(password: CharArray): ByteArray =
         local.exportIdentityBackup(password)
 

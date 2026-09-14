@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="navy_950">#FF070B14</color>
-    <color name="navy_900">#FF0E1626</color>
-    <color name="launcher_background">#FF06101C</color>
-    <color name="accent_blue">#FF3BA0FF</color>
+    <color name="navy_950">#FF08111F</color>
+    <color name="navy_900">#FF0D1B2A</color>
+    <color name="launcher_background">#FF08111F</color>
+    <color name="accent_blue">#FF00C2FF</color>
 </resources>

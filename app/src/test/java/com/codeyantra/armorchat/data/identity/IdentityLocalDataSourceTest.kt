@@ -99,19 +99,15 @@ class IdentityLocalDataSourceTest {
     }
 
     @Test
-    fun create_doesNotRebuildWhenKeyMaterialHasNoMetadata() = runTest {
+    fun create_rebuildsWhenKeyMaterialHasNoMetadataOnFreshInstall() = runTest {
         val keys = FakeSecureIdentityKeyStore(publicKey).also { it.markExisting() }
         val dao = FakeIdentityDao()
         val ds = IdentityLocalDataSource(dao, keys, FixedClock(3L), IdentityBackupCrypto())
 
-        try {
-            ds.createIdentity()
-            throw AssertionError("expected IdentityStorageException")
-        } catch (e: IdentityStorageException.InconsistentState) {
-            assertThat(e.message).contains("metadata")
-        }
-        assertThat(keys.createCount).isEqualTo(0)
-        assertThat(dao.get()).isNull()
+        val created = ds.createIdentity()
+        assertThat(created).isNotNull()
+        assertThat(keys.createCount).isEqualTo(1)
+        assertThat(dao.get()).isNotNull()
     }
 
     @Test
@@ -172,6 +168,10 @@ private class FakeIdentityDao : IdentityDao {
 
     override suspend fun upsert(entity: IdentityEntity) {
         state.value = entity
+    }
+
+    override suspend fun updateProfile(displayName: String, handle: String) {
+        state.value = state.value?.copy(displayName = displayName, handle = handle)
     }
 
     override suspend fun clear() {

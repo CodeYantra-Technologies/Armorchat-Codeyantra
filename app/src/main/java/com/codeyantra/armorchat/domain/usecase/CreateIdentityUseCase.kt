@@ -9,12 +9,21 @@ import javax.inject.Inject
 class CreateIdentityUseCase @Inject constructor(
     private val identityRepository: IdentityRepository,
 ) {
-    suspend operator fun invoke(): Result<UserIdentity> {
+    suspend operator fun invoke(
+        displayName: String = "",
+        handle: String = "",
+    ): Result<UserIdentity> {
         return try {
-            Result.success(identityRepository.createIdentity())
+            val identity = identityRepository.createIdentity()
+            if (displayName.isNotBlank() || handle.isNotBlank()) {
+                identityRepository.updateProfile(displayName, handle)
+            }
+            Result.success(identityRepository.getIdentity() ?: identity)
         } catch (e: CancellationException) {
             throw e
         } catch (e: IdentityStorageException) {
+            Result.failure(e)
+        } catch (e: IllegalArgumentException) {
             Result.failure(e)
         }
     }
