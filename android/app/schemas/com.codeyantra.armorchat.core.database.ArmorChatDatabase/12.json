@@ -1,0 +1,435 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 12,
+    "identityHash": "f3f46f26e8d7a7e428f366d4c96c78a1",
+    "entities": [
+      {
+        "tableName": "identities",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`armorChatId` TEXT NOT NULL, `publicIdentityKey` TEXT NOT NULL, `createdAtEpochMs` INTEGER NOT NULL, `version` INTEGER NOT NULL, `displayName` TEXT NOT NULL, `handle` TEXT NOT NULL, PRIMARY KEY(`armorChatId`))",
+        "fields": [
+          {
+            "fieldPath": "armorChatId",
+            "columnName": "armorChatId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "publicIdentityKey",
+            "columnName": "publicIdentityKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtEpochMs",
+            "columnName": "createdAtEpochMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "version",
+            "columnName": "version",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "handle",
+            "columnName": "handle",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "armorChatId"
+          ]
+        }
+      },
+      {
+        "tableName": "contacts",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `armorChatId` TEXT NOT NULL, `publicIdentityKey` TEXT NOT NULL, `displayName` TEXT NOT NULL, `createdAtEpochMs` INTEGER NOT NULL, `verificationMethod` TEXT NOT NULL, `handle` TEXT, `previousHandle` TEXT, `handleChangedAtEpochMs` INTEGER, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "armorChatId",
+            "columnName": "armorChatId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "publicIdentityKey",
+            "columnName": "publicIdentityKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtEpochMs",
+            "columnName": "createdAtEpochMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "verificationMethod",
+            "columnName": "verificationMethod",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "handle",
+            "columnName": "handle",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "previousHandle",
+            "columnName": "previousHandle",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "handleChangedAtEpochMs",
+            "columnName": "handleChangedAtEpochMs",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_contacts_armorChatId",
+            "unique": true,
+            "columnNames": [
+              "armorChatId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_contacts_armorChatId` ON `${TABLE_NAME}` (`armorChatId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "conversations",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `contactId` TEXT NOT NULL, `title` TEXT, `updatedAtEpochMs` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "contactId",
+            "columnName": "contactId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "updatedAtEpochMs",
+            "columnName": "updatedAtEpochMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_conversations_contactId",
+            "unique": true,
+            "columnNames": [
+              "contactId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_conversations_contactId` ON `${TABLE_NAME}` (`contactId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "messages",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `conversationId` TEXT NOT NULL, `type` TEXT NOT NULL, `isOutgoing` INTEGER NOT NULL, `localPlaintext` TEXT, `ciphertext` BLOB, `status` TEXT NOT NULL, `createdAtEpochMs` INTEGER NOT NULL, `receiptSessionId` TEXT, `receiptCiphertextSha256` TEXT, `receiptEpoch` INTEGER, `replyToJson` TEXT, `deliveredAtEpochMs` INTEGER, `readAtEpochMs` INTEGER, PRIMARY KEY(`id`), FOREIGN KEY(`conversationId`) REFERENCES `conversations`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "conversationId",
+            "columnName": "conversationId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "type",
+            "columnName": "type",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isOutgoing",
+            "columnName": "isOutgoing",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "localPlaintext",
+            "columnName": "localPlaintext",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "ciphertext",
+            "columnName": "ciphertext",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtEpochMs",
+            "columnName": "createdAtEpochMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "receiptSessionId",
+            "columnName": "receiptSessionId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "receiptCiphertextSha256",
+            "columnName": "receiptCiphertextSha256",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "receiptEpoch",
+            "columnName": "receiptEpoch",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "replyToJson",
+            "columnName": "replyToJson",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "deliveredAtEpochMs",
+            "columnName": "deliveredAtEpochMs",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "readAtEpochMs",
+            "columnName": "readAtEpochMs",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_messages_conversationId",
+            "unique": false,
+            "columnNames": [
+              "conversationId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_messages_conversationId` ON `${TABLE_NAME}` (`conversationId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "conversations",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "conversationId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "contact_sessions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`contactId` TEXT NOT NULL, `peerPin` TEXT NOT NULL, `relayOrigin` TEXT NOT NULL, `mailboxId` TEXT, `encryptedOwnerToken` BLOB, `encryptedSubmitCapability` BLOB, `deviceId` TEXT, `binding` TEXT, `localRouteQr` TEXT, `peerRouteQr` TEXT, `mlsSnapshot` BLOB, `groupCreated` INTEGER NOT NULL, `state` TEXT NOT NULL, `updatedAtEpochMs` INTEGER NOT NULL, `mlsSessionId` TEXT, PRIMARY KEY(`contactId`))",
+        "fields": [
+          {
+            "fieldPath": "contactId",
+            "columnName": "contactId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "peerPin",
+            "columnName": "peerPin",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "relayOrigin",
+            "columnName": "relayOrigin",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mailboxId",
+            "columnName": "mailboxId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "encryptedOwnerToken",
+            "columnName": "encryptedOwnerToken",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "encryptedSubmitCapability",
+            "columnName": "encryptedSubmitCapability",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "deviceId",
+            "columnName": "deviceId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "binding",
+            "columnName": "binding",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "localRouteQr",
+            "columnName": "localRouteQr",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "peerRouteQr",
+            "columnName": "peerRouteQr",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "mlsSnapshot",
+            "columnName": "mlsSnapshot",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "groupCreated",
+            "columnName": "groupCreated",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtEpochMs",
+            "columnName": "updatedAtEpochMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mlsSessionId",
+            "columnName": "mlsSessionId",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "contactId"
+          ]
+        }
+      },
+      {
+        "tableName": "local_invites",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `token` TEXT NOT NULL, `expiresAtEpochSeconds` INTEGER NOT NULL, `inviteId` TEXT NOT NULL, `updatedAtEpochMs` INTEGER NOT NULL, `state` TEXT NOT NULL DEFAULT 'ACTIVE', PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "token",
+            "columnName": "token",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "expiresAtEpochSeconds",
+            "columnName": "expiresAtEpochSeconds",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "inviteId",
+            "columnName": "inviteId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtEpochMs",
+            "columnName": "updatedAtEpochMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true,
+            "defaultValue": "'ACTIVE'"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'f3f46f26e8d7a7e428f366d4c96c78a1')"
+    ]
+  }
+}

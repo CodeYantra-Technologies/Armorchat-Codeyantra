@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "648388114804",
+    "project_id": "armorchat-c8af1",
+    "storage_bucket": "armorchat-c8af1.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:648388114804:android:c5d8ac3eb36048ef85d421",
+        "android_client_info": {
+          "package_name": "com.codeyantra.armorchat"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBKLsilO_fI_1Uc9jRg8WF0M5nUUd5-GNA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:648388114804:android:c5d8ac3eb36048ef85d422",
+        "android_client_info": {
+          "package_name": "com.codeyantra.armorchat.debug"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBKLsilO_fI_1Uc9jRg8WF0M5nUUd5-GNA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

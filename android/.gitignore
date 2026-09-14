@@ -1,0 +1,52 @@
+# Built artifacts
+.gradle/
+build/
+app/build/
+captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# Node (relay test tooling)
+node_modules/
+
+# Rust build artifacts
+target/
+
+# Local SDK path — never commit
+local.properties
+
+# IDE
+.idea/
+*.iml
+.navigation/
+.externalNativeBuild/
+.cxx/
+*.hprof
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Signing
+*.jks
+*.keystore
+keystore.properties
+
+# Secrets
+.env
+.env.*
+
+# Test fixture private key — never commit real or throwaway private keys
+relay/test/service-policy-test.pem
+
+# Test / lint
+lint/intermediates/
+lint/generated/
+lint/outputs/
+lint/tmp/
+
+# Kotlin
+.kotlin/
