@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+.vercel/
+.tanstack/
+
+# Rust build artifacts (native MLS libraries)
+android/native/*/target/
+android/native/**/target/
+
+# Built app artifacts (large, regenerable)
+artifacts/*.apk
+artifacts/**/*.apk
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor / tool-local config
+.idea/
+*.iml
+.claude/
+.grok/
+
+# Env / secrets
+.env
+.env.*
+
+# Logs
+*.log
+npm-debug.log*
+
+# Python
+__pycache__/
+*.pyc

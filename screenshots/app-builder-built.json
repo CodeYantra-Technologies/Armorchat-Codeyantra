@@ -1,0 +1,38 @@
+{
+  "url": "http://127.0.0.1:8081/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "ArmorChat",
+      "hasCanvas": false,
+      "bodyTextLen": 258,
+      "bodyTextHash": "86db0124de494157688a3b9a3cde60ebcaaa4f7fa6bb3bf92a001f254d3e8a60",
+      "bodyTextPrefix": "CODEYANTRA TECHNOLOGIES ArmorChat Private conversations. Your id",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-built.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "ArmorChat",
+      "hasCanvas": false,
+      "bodyTextLen": 61,
+      "bodyTextHash": "c4afceb85d7158d0ead7a3ed012f278bc4027c320923f1dd9e54435cf6b5be2f",
+      "bodyTextPrefix": "23:05 ArmorChat by CodeYantra Technologies Secured by Veltrix",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-built-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-built.json",
+  "divergesFromBaseline": false,
+  "baselineReasons": []
+}

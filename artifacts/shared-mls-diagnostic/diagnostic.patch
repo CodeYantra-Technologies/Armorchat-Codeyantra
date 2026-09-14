@@ -1,0 +1,245 @@
+--- android/app/src/main/java/com/codeyantra/armorchat/messaging/TwoPhoneHarness.kt.before
++++ android/app/src/main/java/com/codeyantra/armorchat/messaging/TwoPhoneHarness.kt
+@@ -14,12 +14,24 @@
+ import com.codeyantra.armorchat.crypto.MlsRsFeasibility
+ import com.codeyantra.armorchat.domain.identity.Base64Url
+ import java.security.SecureRandom
++import com.codeyantra.armorchat.messaging.SharedSessionDiagnostic.Stage
+ 
+ class MlsEngine(
+     private val transactMls: (ByteArray, String) -> ByteArray,
+ ) {
+     var state: ByteArray = ByteArray(0)
+         private set
++
++    // Diagnostic-only pool bookkeeping; no snapshot or protocol changes.
++    internal var diagnosticPublishedBindings: List<String> = emptyList()
++    internal fun inspectWelcome(welcome: String, pin: String): Map<String, Any?> {
++        val raw = transactMls(state.copyOf(), CanonicalJson.of(mapOf(
++            "op" to "InspectWelcome", "welcome" to welcome, "pin" to pin,
++            "diagnostic_bindings" to diagnosticPublishedBindings,
++        )))
++        @Suppress("UNCHECKED_CAST")
++        return CanonicalJson.parseObject(String(raw, Charsets.UTF_8))["output"] as Map<String, Any?>
++    }
+ 
+     fun snapshot(): ByteArray = state.copyOf()
+ 
+@@ -90,6 +102,11 @@
+     private val publishedBindings = mutableListOf<String>()
+     private var packagesPublished = false
+ 
++    private var diagnosticAttempt = java.util.UUID.randomUUID().toString()
++    internal fun diagnostic(stage: Stage, pass: Boolean = true, category: SharedSessionDiagnostic.Category? = null) {
++        SharedSessionDiagnostic.stage(stage, pinnedPeer?.takeUnless { it == SessionOrchestrator.INVITE_PEER }, diagnosticAttempt, pass, category)
++    }
++
+     fun snapshot(): ByteArray = engine.snapshot()
+ 
+     fun restore(saved: ByteArray) {
+@@ -144,6 +161,7 @@
+ 
+     fun confirmIfMatchingSession(peerSessionId: String): Boolean {
+         val local = sessionId ?: return false
++        diagnostic(Stage.session_id_match, local == peerSessionId)
+         if (local != peerSessionId) {
+             SafeLog.event(
+                 "mls_session_mismatch",
+@@ -152,6 +170,7 @@
+             return false
+         }
+         sessionConfirmed = true
++        diagnostic(Stage.session_confirmed)
+         SafeLog.event("mls_shared_fp", "fp=${sessionFingerprint()}")
+         return true
+     }
+@@ -254,6 +273,8 @@
+         try {
+             relay.putKeyPackages(mailbox!!.ownerToken, CanonicalJson.of(packages))
+             packagesPublished = true
++            engine.diagnosticPublishedBindings = publishedBindings.toList()
++            diagnostic(Stage.fresh_kp_published)
+             SafeLog.event("stage=KEY_PACKAGE_READY result=PASS")
+         } catch (err: Exception) {
+             SafeLog.event("stage=KEY_PACKAGE_READY result=FAIL exception=${err::class.java.name}")
+@@ -338,9 +359,14 @@
+         require(route.inviterPin == expectedPeerPin) { "route inviter does not match pinned identity" }
+         peerRoute = route
+         peerKeyPackageFresh = freshKp
++        if (freshKp) {
++            diagnosticAttempt = java.util.UUID.randomUUID().toString()
++            diagnostic(Stage.fresh_route_imported)
++        }
+     }
+ 
+     suspend fun initiateGroup(): String {
++        diagnostic(Stage.initiator_selected, peerKeyPackageFresh)
+         if (groupCreated) error("group already created")
+         ensureMlsDevice()
+         val route = peerRoute ?: error("peer route required")
+@@ -348,6 +374,8 @@
+         verifyKeyPackageBinding(route.keyPackageBinding, route.inviterPin)
+         val created = call(mapOf("op" to "CreateGroup"))
+         sessionId = created["session_id"] as String
++        diagnosticAttempt = sessionId!!
++        diagnostic(Stage.group_created)
+         val add = call(
+             mapOf(
+                 "op" to "AddMember",
+@@ -355,6 +383,7 @@
+                 "peer_pin" to route.inviterPin,
+             ),
+         )
++        diagnostic(Stage.add_member_ok)
+         val welcome = add["welcome"] as String
+         sessionId = add["session_id"] as String
+         val accepted = submitHandshake(welcome, route)
+@@ -383,9 +412,35 @@
+             ?: return false
+         val cred = welcome.senderCredentialCanonical ?: error("handshake missing sender credential")
+         val peerPin = expectedPeerPin ?: error("peer pin required")
+-        verifyKeyPackageBinding(cred, peerPin)
+-        val join = call(mapOf("op" to "Join", "welcome" to welcome.encryptedPayloadB64))
++        try {
++            verifyKeyPackageBinding(cred, peerPin)
++            diagnostic(Stage.welcome_sender_verified)
++        } catch (err: Exception) {
++            diagnostic(Stage.welcome_sender_verified, false, SharedSessionDiagnostic.category(err))
++            throw err
++        }
++        if (com.codeyantra.armorchat.BuildConfig.DEBUG) {
++            runCatching { engine.inspectWelcome(welcome.encryptedPayloadB64, pin) }
++                .onSuccess { result ->
++                    val stored = result["stored_match"] == true
++                    val fresh = result["fresh_match"] == true
++                    diagnostic(Stage.welcome_keypackage_match, stored && fresh,
++                        if (!stored) SharedSessionDiagnostic.Category.key_package_not_found
++                        else if (!fresh) SharedSessionDiagnostic.Category.fresh_pool_mismatch else null)
++                }.onFailure {
++                    diagnostic(Stage.welcome_keypackage_match, false, SharedSessionDiagnostic.Category.diagnostic_unavailable)
++                }
++        }
++        diagnostic(Stage.welcome_join_started)
++        val join = try {
++            call(mapOf("op" to "Join", "welcome" to welcome.encryptedPayloadB64))
++        } catch (err: Exception) {
++            diagnostic(Stage.welcome_joined, false, SharedSessionDiagnostic.category(err))
++            throw err
++        }
++        diagnostic(Stage.welcome_joined)
+         sessionId = join["session_id"] as String
++        diagnosticAttempt = sessionId!!
+         consume(welcome)
+         groupCreated = true
+         sessionConfirmed = false
+@@ -506,7 +561,14 @@
+ 
+     suspend fun fetchInboxResult(): RelayFetchResult {
+         val box = mailbox ?: return RelayFetchResult.Unavailable
+-        return relay.fetchInbox(box.ownerToken)
++        return relay.fetchInbox(box.ownerToken).also { result ->
++            if (result is RelayFetchResult.Leased) {
++                result.envelopes.filter { it.payloadType == ImmutableRelayEnvelope.PAYLOAD_HANDSHAKE }.forEach {
++                    SharedSessionDiagnostic.stage(Stage.welcome_received,
++                        pinnedPeer?.takeUnless { pin -> pin == SessionOrchestrator.INVITE_PEER }, it.messageId)
++                }
++            }
++        }
+     }
+ 
+     suspend fun fetchLeased(): List<LeasedRelayEnvelope> = fetchOwn()
+@@ -526,7 +588,17 @@
+         } else {
+             request
+         }
+-        return engine.call(payload)
++        return try {
++            engine.call(payload)
++        } catch (err: Exception) {
++            val stage = when (request["op"]) {
++                "CreateGroup" -> Stage.group_created
++                "AddMember" -> Stage.add_member_ok
++                else -> null
++            }
++            if (stage != null) diagnostic(stage, false, SharedSessionDiagnostic.category(err))
++            throw err
++        }
+     }
+ 
+     private fun signKeyPackage(out: Map<String, Any?>): String {
+@@ -580,6 +652,8 @@
+             senderCredentialCanonical = cred,
+         )
+         val result = relay.submitEnvelope(route.submitCapability, env)
++        SharedSessionDiagnostic.stage(Stage.welcome_submitted, route.inviterPin, env.messageId,
++            result is RelaySubmitResult.Accepted)
+         return result as? RelaySubmitResult.Accepted ?: error("welcome submit failed: $result")
+     }
+ 
+--- android/app/src/main/java/com/codeyantra/armorchat/messaging/ReceiptMessagingPeer.kt.before
++++ android/app/src/main/java/com/codeyantra/armorchat/messaging/ReceiptMessagingPeer.kt
+@@ -71,6 +71,7 @@
+         val enc = peer.encryptRaw(encoded)
+         val env = peer.makeApplicationEnvelope(enc.ciphertextB64, inner.messageId, inner.expiresAt)
+         val accepted = peer.submitEnvelopeToPeer(env) is RelaySubmitResult.Accepted
++        peer.diagnostic(SharedSessionDiagnostic.Stage.setup_route_sent, accepted)
+         if (accepted) peer.setupRouteSent = true
+         return accepted
+     }
+@@ -235,6 +236,7 @@
+         }
+         val inner = try {
+             val parsed = InnerRecord.parse(decrypted.plaintext)
++            if (parsed.kind == InnerKind.SETUP_ROUTE) peer.diagnostic(SharedSessionDiagnostic.Stage.setup_route_received)
+             bindInbound(parsed, item, decrypted, digest)
+             if (parsed.kind == InnerKind.DELIVERY || parsed.kind == InnerKind.READ) {
+                 previewReceipt(parsed)
+--- android/app/src/main/java/com/codeyantra/armorchat/messaging/SessionOrchestrator.kt.before
++++ android/app/src/main/java/com/codeyantra/armorchat/messaging/SessionOrchestrator.kt
+@@ -614,6 +614,10 @@
+                 runCatching {
+                     verifyKeyPackageBinding(item.senderCredentialCanonical!!, peerPin)
+                     true
++                }.onSuccess {
++                    SharedSessionDiagnostic.stage(SharedSessionDiagnostic.Stage.welcome_sender_verified, peerPin, item.messageId)
++                }.onFailure {
++                    SharedSessionDiagnostic.stage(SharedSessionDiagnostic.Stage.welcome_sender_verified, peerPin, item.messageId, false, SharedSessionDiagnostic.category(it))
+                 }.getOrDefault(false)
+         }
+         if (welcome == null) return false
+--- android/native/armorchat-mlsrs/src/lib.rs.before
++++ android/native/armorchat-mlsrs/src/lib.rs
+@@ -600,6 +600,7 @@
+         ciphertext: Option<String>,
+         commit: Option<String>,
+         session_id: Option<String>,
++        diagnostic_bindings: Option<Vec<String>>,
+     }
+     let req: Req = serde_json::from_str(request).map_err(|_| "request_decode")?;
+     if req.op == "Create" {
+@@ -619,6 +620,25 @@
+     let snap: Persist =
+         serde_json::from_slice(state).map_err(|e| format!("persist_decode:{e}"))?;
+     let mut device = restore_from_snap(snap).map_err(|e| format!("restore:{e}"))?;
++    // Read-only diagnostic response: never joins, consumes, or updates the caller snapshot.
++    if req.op == "InspectWelcome" {
++        let bytes = B64.decode(req.welcome.as_deref().ok_or("welcome")?)?;
++        let welcome = MlsMessage::from_bytes(&bytes)?;
++        let refs = welcome.welcome_key_package_references();
++        let stored = device.key_packages.key_packages();
++        let stored_match = refs.iter().any(|r| stored.iter().any(|(id, _)| id.as_slice() == r.as_ref()));
++        let provider = RustCryptoProvider::default().cipher_suite_provider(CIPHERSUITE).ok_or("suite")?;
++        let mut fresh_match = false;
++        for binding in req.diagnostic_bindings.as_deref().unwrap_or_default() {
++            let kp = verify_binding(binding, req.pin.as_deref().ok_or("pin")?)?;
++            if let Some(reference) = kp.key_package_reference(&provider)? {
++                fresh_match |= refs.iter().any(|r| **r == reference);
++            }
++        }
++        return Ok(serde_json::to_vec(&serde_json::json!({
++            "output": { "stored_match": stored_match, "fresh_match": fresh_match }
++        }))?);
++    }
+     device
+         .select_active(req.session_id.as_deref())
+         .map_err(|e| format!("select_session:{e}"))?;
