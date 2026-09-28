@@ -1,6 +1,10 @@
 package com.codeyantra.armorchat.core.crypto
 
+import com.codeyantra.armorchat.core.blob.BlobLayout
+import com.codeyantra.armorchat.domain.identity.Base64Url
 import com.codeyantra.armorchat.domain.model.AttachmentMetadata
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -48,6 +52,39 @@ class AttachmentCryptoTest {
             ivBase64Url = encrypted.ivBase64Url,
             expectedSha256DigestHex = encrypted.sha256Digest,
         )
+    }
+
+    @Test
+    fun streamingAesGcmMatchesOneShot() {
+        val key = ByteArray(32) { (it + 3).toByte() }
+        val iv = ByteArray(12) { (it + 1).toByte() }
+        val plain = ByteArray(200_000) { (it * 31).toByte() }
+        val oneShot = AttachmentCrypto.encryptOneShot(plain, key, iv)
+        val streamed = ByteArrayOutputStream()
+        val digest = AttachmentCrypto.encryptStreaming(ByteArrayInputStream(plain), streamed, key, iv)
+        assertArrayEquals(oneShot, streamed.toByteArray())
+        assertEquals(AttachmentCrypto.sha256(oneShot), digest)
+        val decrypted = ByteArrayOutputStream()
+        AttachmentCrypto.decryptStream(
+            ByteArrayInputStream(oneShot),
+            decrypted,
+            Base64Url.encode(key),
+            Base64Url.encode(iv),
+        )
+        assertArrayEquals(plain, decrypted.toByteArray())
+    }
+
+    @Test
+    fun chunkLayoutMatchesRelaySliceRules() {
+        assertEquals(262144, BlobLayout.CHUNK_SIZE)
+        assertEquals(3, BlobLayout.chunkCount(70, 32))
+        assertEquals(32, BlobLayout.chunkLength(70, 0, 32, 3))
+        assertEquals(32, BlobLayout.chunkLength(70, 1, 32, 3))
+        assertEquals(6, BlobLayout.chunkLength(70, 2, 32, 3))
+        val total = BlobLayout.MAX_CIPHERTEXT_BYTES
+        val count = BlobLayout.chunkCount(total)
+        val last = BlobLayout.chunkLength(total, count - 1, BlobLayout.CHUNK_SIZE, count)
+        assertEquals(total, (count - 1L) * BlobLayout.CHUNK_SIZE + last)
     }
 
     @Test

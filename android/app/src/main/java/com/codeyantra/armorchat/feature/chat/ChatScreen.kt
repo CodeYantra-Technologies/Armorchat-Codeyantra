@@ -27,21 +27,25 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -136,6 +140,7 @@ fun ChatRoute(
         messageForInfo = viewModel.messageForInfo,
         onOpenMessageInfo = viewModel::setInfoMessage,
         onDismissMessageInfo = { viewModel.setInfoMessage(null) },
+        onCancelTransfer = viewModel::cancelTransfer,
     )
 }
 
@@ -159,10 +164,12 @@ fun ChatScreen(
     messageForInfo: Message? = null,
     onOpenMessageInfo: (Message) -> Unit = {},
     onDismissMessageInfo: () -> Unit = {},
+    onCancelTransfer: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val colors = MaterialTheme.colorScheme
     val scope = rememberCoroutineScope()
+    CompositionLocalProvider(LocalDownloadProgress provides state.downloadProgress) {
 
     messageForInfo?.let { infoMsg ->
         MessageInfoBottomSheet(
@@ -246,6 +253,31 @@ fun ChatScreen(
                 .fillMaxSize()
                 .padding(padding),
         ) {
+            if (state.transfer.active) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = state.transfer.detail,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.onSurface,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (state.transfer.cancellable) {
+                            TextButton(onClick = onCancelTransfer) { Text("Cancel") }
+                        }
+                    }
+                    LinearProgressIndicator(
+                        progress = { state.transfer.progress.coerceIn(0f, 1f) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp),
+                    )
+                }
+            }
             state.notice?.let { message ->
                 Text(
                     text = message,
@@ -267,28 +299,58 @@ fun ChatScreen(
             } else {
                 val listState = rememberLazyListState()
                 val rows = remember(state.messages) { withDateSeparators(state.messages) }
+                // Intro badge is item 0 and a spacer follows the rows, so the tail is rows.size + 1.
+                val endIndex = rows.size + 1
+                var followLatest by remember { mutableStateOf(true) }
+                var scrollingProgrammatically by remember { mutableStateOf(false) }
+                var previousMessageCount by remember { mutableIntStateOf(0) }
 
-                val isAtBottom by remember {
-                    derivedStateOf {
-                        val layoutInfo = listState.layoutInfo
-                        val visibleItems = layoutInfo.visibleItemsInfo
-                        if (visibleItems.isEmpty()) true
-                        else {
-                            val lastVisible = visibleItems.last()
-                            lastVisible.index >= layoutInfo.totalItemsCount - 3
-                        }
-                    }
+                fun tailIsHidden(): Boolean {
+                    val info = listState.layoutInfo
+                    val visible = info.visibleItemsInfo
+                    if (visible.isEmpty() || info.totalItemsCount == 0) return false
+                    val tail = visible.last()
+                    if (tail.index < info.totalItemsCount - 1) return true
+                    return tail.offset + tail.size > info.viewportEndOffset + 2
                 }
 
-                var previousMessageCount by remember { mutableIntStateOf(0) }
-                LaunchedEffect(state.messages.size) {
-                    val totalCount = state.messages.size
-                    if (totalCount > 0 && rows.isNotEmpty()) {
-                        if (previousMessageCount == 0 || isAtBottom) {
-                            listState.animateScrollToItem(rows.size - 1)
+                LaunchedEffect(listState) {
+                    snapshotFlow { listState.isScrollInProgress to tailIsHidden() }
+                        .collect { (inProgress, hidden) ->
+                            if (scrollingProgrammatically) return@collect
+                            if (inProgress && hidden) followLatest = false
+                            if (!inProgress && !hidden) followLatest = true
+                        }
+                }
+
+                LaunchedEffect(state.messages.size, endIndex) {
+                    val count = state.messages.size
+                    val ownSend = count > previousMessageCount &&
+                        state.messages.lastOrNull()?.isOutgoing == true
+                    if (count > 0 && rows.isNotEmpty() && (previousMessageCount == 0 || followLatest || ownSend)) {
+                        followLatest = true
+                        scrollingProgrammatically = true
+                        try {
+                            listState.animateScrollToItem(endIndex)
+                        } finally {
+                            scrollingProgrammatically = false
                         }
                     }
-                    previousMessageCount = totalCount
+                    previousMessageCount = count
+                }
+
+                LaunchedEffect(followLatest) {
+                    if (!followLatest) return@LaunchedEffect
+                    snapshotFlow { tailIsHidden() to listState.layoutInfo.totalItemsCount }
+                        .collect { (hidden, total) ->
+                            if (!followLatest || !hidden || total <= 0) return@collect
+                            scrollingProgrammatically = true
+                            try {
+                                listState.scrollToItem(total - 1)
+                            } finally {
+                                scrollingProgrammatically = false
+                            }
+                        }
                 }
 
                 ChatWallpaper(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -320,7 +382,7 @@ fun ChatScreen(
                                             val index = rows.indexOfFirst { r -> r is ChatRow.Bubble && r.message.id == targetId }
                                             if (index != -1) {
                                                 scope.launch {
-                                                    listState.animateScrollToItem(index)
+                                                    listState.animateScrollToItem(index + 1)
                                                 }
                                                 onHighlightMessage(targetId)
                                                 scope.launch {
@@ -338,11 +400,17 @@ fun ChatScreen(
                             item { Spacer(Modifier.height(8.dp)) }
                         }
 
-                        if (!isAtBottom && rows.isNotEmpty()) {
+                        if (!followLatest && rows.isNotEmpty()) {
                             SmallFloatingActionButton(
                                 onClick = {
+                                    followLatest = true
                                     scope.launch {
-                                        listState.animateScrollToItem(rows.size - 1)
+                                        scrollingProgrammatically = true
+                                        try {
+                                            listState.animateScrollToItem(endIndex)
+                                        } finally {
+                                            scrollingProgrammatically = false
+                                        }
                                     }
                                 },
                                 containerColor = colors.surfaceVariant,
@@ -361,6 +429,7 @@ fun ChatScreen(
                 }
             }
         }
+    }
     }
 }
 

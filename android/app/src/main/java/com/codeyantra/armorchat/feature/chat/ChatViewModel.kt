@@ -6,6 +6,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.codeyantra.armorchat.core.blob.BlobTransferUi
 import com.codeyantra.armorchat.core.network.NetworkAvailability
 import com.codeyantra.armorchat.domain.identity.ArmorChatId
 import com.codeyantra.armorchat.domain.model.AttachmentMetadata
@@ -45,6 +46,8 @@ data class ChatUiState(
     val notice: String? = null,
     val loading: Boolean = true,
     val scanningRoute: Boolean = false,
+    val transfer: BlobTransferUi = BlobTransferUi(),
+    val downloadProgress: Map<String, Float> = emptyMap(),
 ) {
     val displayName: String
         get() = contact?.displayName?.takeIf { it.isNotBlank() }
@@ -161,23 +164,27 @@ class ChatViewModel @Inject constructor(
         initialValue = ChatCore(null, null, emptyList(), SecureSessionView(), NetworkAvailability()),
     )
 
+    private val transferFlow = messaging.observeTransfer(conversationId)
+    private val downloadsFlow = messaging.observeDownloads()
+
     val state: StateFlow<ChatUiState> = combine(
-        core,
-        draft,
-        notice,
-        scanning,
-    ) { c, d, n, s ->
-        ChatUiState(
-            conversation = c.conversation,
-            contact = c.contact,
-            messages = c.messages,
-            draft = d,
-            session = c.session,
-            network = c.network,
-            notice = n,
-            loading = false,
-            scanningRoute = s,
-        )
+        combine(core, draft, notice, scanning) { c, d, n, s ->
+            ChatUiState(
+                conversation = c.conversation,
+                contact = c.contact,
+                messages = c.messages,
+                draft = d,
+                session = c.session,
+                network = c.network,
+                notice = n,
+                loading = false,
+                scanningRoute = s,
+            )
+        },
+        transferFlow,
+        downloadsFlow,
+    ) { base, transfer, downloads ->
+        base.copy(transfer = transfer, downloadProgress = downloads)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.Eagerly,
@@ -245,6 +252,10 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    fun cancelTransfer() {
+        messaging.cancelLargeTransfer(conversationId)
+    }
+
     fun sendAttachment(
         context: android.content.Context,
         uri: android.net.Uri,
@@ -253,39 +264,82 @@ class ChatViewModel @Inject constructor(
         sizeBytes: Long,
     ) {
         val isImage = mimeType.startsWith("image/")
-        val maxSize = if (isImage) com.codeyantra.armorchat.core.config.AttachmentConfig.MAX_IMAGE_SIZE_BYTES else com.codeyantra.armorchat.core.config.AttachmentConfig.MAX_DOCUMENT_SIZE_BYTES
-        if (sizeBytes > maxSize) {
-            val limitMb = maxSize / (1024 * 1024)
-            notice.value = "File is too large. Limit is ${limitMb}MB."
-            return
-        }
-
         val replyMeta = buildReplyMetadata()
         replyingToMessage = null
-
-        viewModelScope.launch {
-            val fileBytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                try {
-                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                        ?: uri.path?.let { java.io.File(it).takeIf { f -> f.exists() }?.readBytes() }
-                } catch (e: Exception) {
-                    null
+        when (AttachmentRouting.decide(isImage, sizeBytes, mimeType)) {
+            AttachmentRoute.OverLimit -> {
+                notice.value = AttachmentRouting.OVER_LIMIT_NOTICE
+            }
+            AttachmentRoute.Chunked -> {
+                viewModelScope.launch {
+                    applyAttachmentResult(
+                        messaging.sendLargeAttachment(
+                            conversationId,
+                            uri,
+                            originalName,
+                            mimeType,
+                            sizeBytes,
+                            isImage,
+                            replyMeta,
+                        ),
+                    )
                 }
             }
-
-            if (fileBytes == null || fileBytes.isEmpty()) {
-                notice.value = "Unable to read attachment file."
-                return@launch
+            AttachmentRoute.LegacySmall -> {
+                viewModelScope.launch {
+                    val fileBytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        try {
+                            context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                                ?: uri.path?.let { java.io.File(it).takeIf { f -> f.exists() }?.readBytes() }
+                        } catch (_: Exception) {
+                            null
+                        }
+                    }
+                    if (fileBytes == null || fileBytes.isEmpty()) {
+                        notice.value = "Unable to read attachment file."
+                        return@launch
+                    }
+                    val actual = fileBytes.size.toLong()
+                    when (AttachmentRouting.decide(isImage, actual, mimeType)) {
+                        AttachmentRoute.OverLimit -> notice.value = AttachmentRouting.OVER_LIMIT_NOTICE
+                        AttachmentRoute.Chunked -> applyAttachmentResult(
+                            messaging.sendLargeAttachment(
+                                conversationId,
+                                uri,
+                                originalName,
+                                mimeType,
+                                actual,
+                                isImage,
+                                replyMeta,
+                            ),
+                        )
+                        AttachmentRoute.LegacySmall -> applyAttachmentResult(
+                            messaging.sendAttachment(
+                                conversationId,
+                                fileBytes,
+                                originalName,
+                                mimeType,
+                                isImage,
+                                replyMeta,
+                            ),
+                        )
+                    }
+                }
             }
+        }
+    }
 
-            when (messaging.sendAttachment(conversationId, fileBytes, originalName, mimeType, isImage, replyMeta)) {
-                is SendTextResult.Queued -> syncNow()
-                SendTextResult.Empty -> notice.value = "Attachment is empty"
-                SendTextResult.ConversationMissing -> notice.value = "Conversation missing"
-                SendTextResult.NetworkUnavailable -> notice.value = "Network unavailable"
-                SendTextResult.SessionNotReady -> notice.value = "Session not ready"
-                SendTextResult.TransportUnavailable -> notice.value = "Transport unavailable"
+    private fun applyAttachmentResult(result: SendTextResult) {
+        when (result) {
+            is SendTextResult.Queued -> {
+                notice.value = AttachmentRouting.noticeAfterQueued(notice.value)
+                syncNow()
             }
+            SendTextResult.Empty -> notice.value = "Attachment is empty"
+            SendTextResult.ConversationMissing -> notice.value = "Conversation missing"
+            SendTextResult.NetworkUnavailable -> notice.value = "Network unavailable"
+            SendTextResult.SessionNotReady -> notice.value = "Session not ready"
+            SendTextResult.TransportUnavailable -> notice.value = "Transport unavailable"
         }
     }
 

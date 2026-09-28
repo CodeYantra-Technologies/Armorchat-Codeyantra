@@ -1,6 +1,10 @@
 package com.codeyantra.armorchat.messaging
 
-import com.codeyantra.armorchat.BuildConfig
+import com.codeyantra.armorchat.core.blob.DownloadOutcome
+import com.codeyantra.armorchat.core.blob.LargeBlobPending
+import com.codeyantra.armorchat.core.blob.LargeBlobTransfer
+import com.codeyantra.armorchat.core.blob.LargeOutgoing
+import com.codeyantra.armorchat.core.blob.PublishResult
 import com.codeyantra.armorchat.core.common.AppClock
 import com.codeyantra.armorchat.core.common.AppDispatchers
 import com.codeyantra.armorchat.core.database.dao.ContactSessionDao
@@ -68,8 +72,25 @@ class ChatMessagingService @Inject constructor(
         nowSeconds = nowSeconds,
     )
     private val mutex = Mutex()
-    private val enabled = BuildConfig.DEBUG
+    private val enabled = true
     private val contactPins = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val largeBlobs by lazy {
+        LargeBlobTransfer(
+            context = context,
+            origin = { provider.clientFor(registry.bootstrap().origin).originHttps },
+            ownerToken = { conversationId ->
+                val pin = contactPinFor(conversationId)
+                if (pin == null) null else orchestrator.link(pin)?.peer?.mailbox?.ownerToken
+            },
+            publish = { pending, markAttempted, assignMessageId ->
+                publishLargeBlob(pending, markAttempted, assignMessageId)
+            },
+        )
+    }
+
+    init {
+        largeBlobs.kick()
+    }
 
     override val network: StateFlow<NetworkAvailability> = policy.availability
 
@@ -382,11 +403,7 @@ class ChatMessagingService @Inject constructor(
         }
         if (fileBytes.isEmpty()) return SendTextResult.Empty
         if (fileBytes.size.toLong() > maxSize) return SendTextResult.TransportUnavailable
-        val mediaClass = when {
-            mimeType.startsWith("audio/") -> "voice"
-            isImage || mimeType.startsWith("image/") -> "image"
-            else -> "document"
-        }
+        val mediaClass = AttachmentClassification.mediaClass(mimeType, isImage)
         val prepared = if (mediaClass == "image") compressImage(fileBytes) else fileBytes
         val encrypted = try {
             com.codeyantra.armorchat.core.crypto.AttachmentCrypto.encrypt(prepared)
@@ -452,11 +469,7 @@ class ChatMessagingService @Inject constructor(
                     return@withLock SendTextResult.TransportUnavailable
                 }
                 val createdAt = clock.nowEpochMs()
-                val msgType = when (mediaClass) {
-                    "image" -> MessageType.IMAGE.name
-                    "voice" -> MessageType.VOICE.name
-                    else -> MessageType.DOCUMENT.name
-                }
+                val msgType = AttachmentClassification.messageTypeName(mediaClass)
                 messageDao.insert(
                     MessageEntity(
                         id = record.messageId,
@@ -477,6 +490,51 @@ class ChatMessagingService @Inject constructor(
         }
     }
 
+    override suspend fun sendLargeAttachment(
+        conversationId: String,
+        uri: android.net.Uri,
+        originalName: String,
+        mimeType: String,
+        sizeBytes: Long,
+        isImage: Boolean,
+        replyTo: ReplyMetadata?,
+    ): SendTextResult {
+        if (!enabled) return SendTextResult.TransportUnavailable
+        if (sizeBytes > com.codeyantra.armorchat.core.config.AttachmentConfig.MAX_STREAM_BYTES) {
+            return SendTextResult.TransportUnavailable
+        }
+        return withContext(dispatchers.io) {
+            val ready = mutex.withLock {
+                if (policy.blocksNetwork()) return@withLock SendTextResult.NetworkUnavailable
+                val pin = contactPinFor(conversationId) ?: return@withLock SendTextResult.ConversationMissing
+                val owner = orchestrator.link(pin)?.peer?.mailbox?.ownerToken
+                if (owner.isNullOrEmpty()) SendTextResult.SessionNotReady else null
+            }
+            if (ready != null) return@withContext ready
+            val mediaClass = AttachmentClassification.mediaClass(mimeType, isImage)
+            largeBlobs.enqueue(
+                LargeOutgoing(
+                    conversationId = conversationId,
+                    uri = uri,
+                    originalName = originalName,
+                    mimeType = mimeType,
+                    mediaClass = mediaClass,
+                    sizeBytes = sizeBytes,
+                    replyToJson = replyTo?.toJson(),
+                ),
+            )
+            SendTextResult.Queued("blob-pending", MessageStatus.SENDING)
+        }
+    }
+
+    override fun cancelLargeTransfer(conversationId: String) {
+        largeBlobs.cancel(conversationId)
+    }
+
+    override fun observeTransfer(conversationId: String) = largeBlobs.observe(conversationId)
+
+    override fun observeDownloads() = largeBlobs.observeDownloads()
+
     override suspend fun downloadAttachmentBlob(
         conversationId: String,
         attachmentId: String,
@@ -489,28 +547,151 @@ class ChatMessagingService @Inject constructor(
         if (!enabled) return false
         return withContext(dispatchers.io) {
             try {
-                val client = provider.clientFor(registry.bootstrap().origin)
-                val cipherBlob = client.downloadBlob("", blobId) ?: return@withContext false
-                val decrypted = com.codeyantra.armorchat.core.crypto.AttachmentCrypto.decrypt(
-                    ciphertext = cipherBlob,
-                    keyBase64Url = wrappedKeyBase64Url,
-                    ivBase64Url = ivBase64Url,
-                    expectedSha256DigestHex = sha256DigestHex,
-                )
-                com.codeyantra.armorchat.core.storage.AttachmentStorageManager.saveAttachment(
-                    context,
-                    attachmentId,
-                    decrypted,
-                )
-                true
+                when (
+                    largeBlobs.download(
+                        attachmentId = attachmentId,
+                        blobId = blobId,
+                        keyBase64Url = wrappedKeyBase64Url,
+                        ivBase64Url = ivBase64Url,
+                        sha256 = sha256DigestHex,
+                    )
+                ) {
+                    DownloadOutcome.Saved -> true
+                    DownloadOutcome.Failed -> false
+                    DownloadOutcome.NotChunked -> legacyDownloadBlob(
+                        attachmentId,
+                        blobId,
+                        wrappedKeyBase64Url,
+                        ivBase64Url,
+                        sha256DigestHex,
+                    )
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
             } catch (_: Exception) {
                 false
             }
         }
     }
 
+    private suspend fun legacyDownloadBlob(
+        attachmentId: String,
+        blobId: String,
+        wrappedKeyBase64Url: String,
+        ivBase64Url: String,
+        sha256DigestHex: String,
+    ): Boolean {
+        val client = provider.clientFor(registry.bootstrap().origin)
+        val cipherBlob = client.downloadBlob("", blobId) ?: return false
+        val decrypted = com.codeyantra.armorchat.core.crypto.AttachmentCrypto.decrypt(
+            ciphertext = cipherBlob,
+            keyBase64Url = wrappedKeyBase64Url,
+            ivBase64Url = ivBase64Url,
+            expectedSha256DigestHex = sha256DigestHex,
+        )
+        com.codeyantra.armorchat.core.storage.AttachmentStorageManager.saveAttachment(
+            context,
+            attachmentId,
+            decrypted,
+        )
+        return true
+    }
+
+    private suspend fun publishLargeBlob(
+        pending: LargeBlobPending,
+        markAttempted: () -> Unit,
+        assignMessageId: (String) -> Unit,
+    ): PublishResult {
+        if (pending.messageId != null) {
+            if (messageDao.findById(pending.messageId) == null) {
+                insertLargeRow(pending, pending.messageId, MessageStatus.SENDING.name, null)
+            }
+            return PublishResult.Sent(pending.messageId)
+        }
+        return mutex.withLock {
+            val conversation = conversationRepository.getConversation(pending.conversationId)
+                ?: return@withLock PublishResult.Retry
+            val contact = contactRepository.getContact(conversation.contactId)
+                ?: return@withLock PublishResult.Retry
+            if (policy.blocksNetwork()) return@withLock PublishResult.Retry
+            val view = orchestrator.sessionView(
+                identityRepository.getIdentity()?.publicIdentityKey.orEmpty(),
+                contact.publicIdentityKey,
+            )
+            if (!view.composerAllowed) return@withLock PublishResult.Retry
+            markAttempted()
+            val replyTo = ReplyMetadata.fromJson(pending.replyToJson)
+            val metadata = com.codeyantra.armorchat.domain.model.AttachmentMetadata(
+                attachmentId = pending.attachmentId,
+                blobId = pending.blobId,
+                originalName = pending.originalName,
+                mimeType = pending.mimeType,
+                sizeBytes = pending.sizeBytes,
+                ciphertextDigestSha256 = pending.sha256,
+                ivBase64Url = pending.ivBase64Url,
+                wrappedKeyBase64Url = pending.keyBase64Url,
+                cryptoVersion = 1,
+                inlineCiphertext = "",
+                mediaClass = pending.mediaClass,
+                replyTo = replyTo,
+            )
+            val record = try {
+                orchestrator.sendAttachment(contact.publicIdentityKey, metadata.toJson(), replyTo)
+            } catch (_: Exception) {
+                SafeLog.failure("blob_transfer", "descriptor")
+                return@withLock PublishResult.GiveUp
+            }
+            assignMessageId(record.messageId)
+            if (messageDao.findById(record.messageId) == null) {
+                insertLargeRow(pending, record.messageId, record.progress.status.name, record.ciphertextB64)
+            }
+            persist(contact)
+            PublishResult.Sent(record.messageId)
+        }
+    }
+
+    private suspend fun insertLargeRow(
+        pending: LargeBlobPending,
+        messageId: String,
+        status: String,
+        ciphertextB64: String?,
+    ) {
+        val conversation = conversationRepository.getConversation(pending.conversationId) ?: return
+        val metadata = com.codeyantra.armorchat.domain.model.AttachmentMetadata(
+            attachmentId = pending.attachmentId,
+            blobId = pending.blobId,
+            originalName = pending.originalName,
+            mimeType = pending.mimeType,
+            sizeBytes = pending.sizeBytes,
+            ciphertextDigestSha256 = pending.sha256,
+            ivBase64Url = pending.ivBase64Url,
+            wrappedKeyBase64Url = pending.keyBase64Url,
+            cryptoVersion = 1,
+            inlineCiphertext = "",
+            mediaClass = pending.mediaClass,
+            replyTo = ReplyMetadata.fromJson(pending.replyToJson),
+        )
+        val msgType = AttachmentClassification.messageTypeName(pending.mediaClass)
+        val createdAt = clock.nowEpochMs()
+        messageDao.insert(
+            MessageEntity(
+                id = messageId,
+                conversationId = pending.conversationId,
+                type = msgType,
+                isOutgoing = true,
+                localPlaintext = metadata.toJson(),
+                ciphertext = ciphertextB64?.toByteArray(Charsets.UTF_8),
+                status = status,
+                createdAtEpochMs = createdAt,
+                replyToJson = pending.replyToJson,
+            ),
+        )
+        conversationDao.touch(pending.conversationId, conversation.title, createdAt)
+    }
+
     override suspend fun syncContact(contactId: String) {
         if (!enabled) return
+        largeBlobs.kick()
         withContext(dispatchers.io) {
             mutex.withLock {
                 val contact = contactRepository.getContact(contactId) ?: return@withLock

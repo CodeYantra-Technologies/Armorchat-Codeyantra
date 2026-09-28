@@ -30,7 +30,8 @@ local.properties
 .DS_Store
 Thumbs.db
 
-# Signing
+# Signing — the whole directory, never just the file extensions
+keystore/
 *.jks
 *.keystore
 keystore.properties

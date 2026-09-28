@@ -25,6 +25,7 @@ import {
   shortRef,
 } from "./ids.mjs";
 import { assertWakePayloadSafe, isPlausibleFcmToken, syncHintData } from "./push.mjs";
+import { BlobProtocolError } from "./blob-transport.mjs";
 
 const FORBIDDEN_STATES = new Set(["delivered", "read", "DELIVERED", "READ"]);
 
@@ -169,7 +170,7 @@ function clientIp(req) {
   return req.socket.remoteAddress || "unknown";
 }
 
-export function createRelay({ store, tls, mailboxLimitPerHour = 1000, pushSender = null }) {
+export function createRelay({ store, tls, mailboxLimitPerHour = 1000, pushSender = null, blobTransport = null }) {
   const mailboxCreates = new Map();
   const buckets = new Map();
 
@@ -212,6 +213,116 @@ export function createRelay({ store, tls, mailboxLimitPerHour = 1000, pushSender
     mailboxCreates.set(ip, list);
   }
 
+  function parseChunkIndex(raw) {
+    if (typeof raw !== "string" || !/^(0|[1-9][0-9]{0,5})$/.test(raw)) return null;
+    return Number(raw);
+  }
+
+  async function handleChunkedBlob(req, res, rest) {
+    if (!blobTransport) throw new RelayError(404, "NOT_FOUND");
+    const parts = rest.split("/");
+    if (parts.length < 2 || parts.some((part) => part.length === 0)) throw new RelayError(400, "MALFORMED");
+    const blobId = parts[0];
+    const decoded = decodeB64UrlExact(blobId);
+    if (!decoded || decoded.length < 16 || decoded.length > 64) throw new RelayError(400, "MALFORMED");
+    try {
+      await blobTransport.sweep();
+    } catch {
+      logEvent("blob_sweep_failed");
+    }
+    try {
+      if (parts.length === 2 && parts[1] === "manifest" && req.method === "GET") {
+        const manifest = await blobTransport.manifest(blobId);
+        if (!manifest) throw new RelayError(404, "NOT_FOUND");
+        jsonResponse(res, 200, manifest);
+        return;
+      }
+      if (parts.length === 2 && parts[1] === "sessions" && req.method === "DELETE") {
+        const who = auth(store, req, "owner");
+        await readBody(req);
+        const removed = await blobTransport.deleteSession(blobId, who.mailbox_id);
+        if (!removed) throw new RelayError(404, "NOT_FOUND");
+        jsonResponse(res, 200, { protocol_version: 1, state: "accepted" });
+        return;
+      }
+      if (parts.length === 2 && parts[1] === "sessions" && req.method === "POST") {
+        if (store.isSuspended()) throw new RelayError(503, "SERVICE_SUSPENDED", { retry_after: 60 });
+        const who = auth(store, req, "owner");
+        requireJson(req);
+        const raw = await readBody(req);
+        const text = utf8FromBuffer(raw);
+        const body = parseStrict(text);
+        if (canonicalize(body) !== text) throw new RelayError(400, "MALFORMED");
+        exactObject(body, ["chunk_count", "chunk_size", "ciphertext_sha256", "protocol_version", "total_bytes"]);
+        const opened = await blobTransport.openSession({
+          blobId,
+          mailboxId: who.mailbox_id,
+          protocolVersion: body.protocol_version,
+          totalBytes: body.total_bytes,
+          chunkSize: body.chunk_size,
+          chunkCount: body.chunk_count,
+          ciphertextSha256: body.ciphertext_sha256,
+        });
+        jsonResponse(res, opened.created ? 201 : 200, opened.body);
+        return;
+      }
+      if (parts.length === 2 && parts[1] === "complete" && req.method === "POST") {
+        if (store.isSuspended()) throw new RelayError(503, "SERVICE_SUSPENDED", { retry_after: 60 });
+        const who = auth(store, req, "owner");
+        requireJson(req);
+        const raw = await readBody(req);
+        const text = utf8FromBuffer(raw);
+        const body = parseStrict(text);
+        if (canonicalize(body) !== text) throw new RelayError(400, "MALFORMED");
+        exactObject(body, ["ciphertext_sha256", "protocol_version"]);
+        const sealed = await blobTransport.complete({
+          blobId,
+          mailboxId: who.mailbox_id,
+          protocolVersion: body.protocol_version,
+          ciphertextSha256: body.ciphertext_sha256,
+        });
+        jsonResponse(res, sealed.created ? 201 : 200, { protocol_version: 1, state: "accepted" });
+        return;
+      }
+      if (parts.length === 3 && parts[1] === "chunks") {
+        const index = parseChunkIndex(parts[2]);
+        if (index == null) throw new RelayError(400, "MALFORMED");
+        if (req.method === "PUT") {
+          if (store.isSuspended()) throw new RelayError(503, "SERVICE_SUSPENDED", { retry_after: 60 });
+          const who = auth(store, req, "owner");
+          const bytes = await readBody(req, blobTransport.chunkSize);
+          const result = await blobTransport.putChunk({
+            blobId,
+            mailboxId: who.mailbox_id,
+            index,
+            bytes,
+          });
+          jsonResponse(res, result.created ? 201 : 200, {
+            protocol_version: 1,
+            state: "accepted",
+            index,
+          });
+          return;
+        }
+        if (req.method === "GET") {
+          const bytes = await blobTransport.getChunk(blobId, index);
+          if (!bytes) throw new RelayError(404, "NOT_FOUND");
+          res.writeHead(200, {
+            "content-type": "application/octet-stream",
+            "cache-control": "no-store",
+            "content-length": bytes.length,
+          });
+          res.end(bytes);
+          return;
+        }
+      }
+      throw new RelayError(400, "MALFORMED");
+    } catch (err) {
+      if (err instanceof BlobProtocolError) throw new RelayError(err.status, err.code);
+      throw err;
+    }
+  }
+
   async function handle(req, res) {
     try {
       const url = new URL(req.url || "/", "https://relay.invalid");
@@ -228,7 +339,12 @@ export function createRelay({ store, tls, mailboxLimitPerHour = 1000, pushSender
         return;
       }
       if (path.startsWith("/v1/blobs/")) {
-        const blobId = path.slice("/v1/blobs/".length);
+        const rest = path.slice("/v1/blobs/".length);
+        if (rest.includes("/")) {
+          await handleChunkedBlob(req, res, rest);
+          return;
+        }
+        const blobId = rest;
         const decoded = decodeB64UrlExact(blobId);
         if (!decoded || decoded.length < 16 || decoded.length > 64) throw new RelayError(400, "MALFORMED");
         if (req.method === "PUT") {
@@ -697,6 +813,13 @@ export function createRelay({ store, tls, mailboxLimitPerHour = 1000, pushSender
     handle,
   );
 
+  const blobSweepTimer = blobTransport
+    ? setInterval(() => {
+        blobTransport.sweep().catch(() => logEvent("blob_sweep_failed"));
+      }, 10 * 60 * 1000)
+    : null;
+  blobSweepTimer?.unref?.();
+
   return {
     server,
     store,
@@ -706,6 +829,7 @@ export function createRelay({ store, tls, mailboxLimitPerHour = 1000, pushSender
       });
     },
     close() {
+      if (blobSweepTimer) clearInterval(blobSweepTimer);
       return new Promise((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
       });

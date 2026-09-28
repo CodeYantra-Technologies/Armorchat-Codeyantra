@@ -1,5 +1,6 @@
 package com.codeyantra.armorchat.messaging
 
+import com.codeyantra.armorchat.core.blob.BlobTransferUi
 import com.codeyantra.armorchat.core.network.NetworkAvailability
 import com.codeyantra.armorchat.domain.identity.InviteRedemption
 import com.codeyantra.armorchat.domain.identity.ContactQrV2
@@ -7,6 +8,7 @@ import com.codeyantra.armorchat.domain.model.Contact
 import com.codeyantra.armorchat.domain.repository.SendTextResult
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flowOf
 
 /**
  * UI-facing messaging boundary. Chat composables never touch MLS snapshots,
@@ -51,6 +53,27 @@ interface ChatMessagingController {
         ivBase64Url: String,
         sha256DigestHex: String,
     ): Boolean = false
+
+    /**
+     * Files above the legacy inline/single-PUT limit. Default keeps fakes compiling.
+     * The real service streams ciphertext and does not take the messaging mutex
+     * until the small descriptor is ready.
+     */
+    suspend fun sendLargeAttachment(
+        conversationId: String,
+        uri: android.net.Uri,
+        originalName: String,
+        mimeType: String,
+        sizeBytes: Long,
+        isImage: Boolean,
+        replyTo: ReplyMetadata?,
+    ): SendTextResult = SendTextResult.TransportUnavailable
+
+    fun cancelLargeTransfer(conversationId: String) = Unit
+
+    fun observeTransfer(conversationId: String): Flow<BlobTransferUi> = flowOf(BlobTransferUi())
+
+    fun observeDownloads(): Flow<Map<String, Float>> = flowOf(emptyMap())
     suspend fun syncContact(contactId: String)
     suspend fun markOpened(conversationId: String, messageId: String)
     suspend fun refreshPolicy()

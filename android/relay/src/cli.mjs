@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { createStore } from "./store.mjs";
 import { createRelay } from "./relay.mjs";
+import { createBlobTransport } from "./blob-transport.mjs";
 import { createFirebasePushSender } from "./push.mjs";
 
 const dataDir = process.env.RELAY_DATA_DIR;
@@ -37,11 +39,16 @@ if (process.env.RELAY_NETWORK_POLICY) {
 }
 const mailboxLimit = Number(process.env.RELAY_MAILBOX_LIMIT || 1000);
 const pushSender = await createFirebasePushSender();
+const blobTransport = await createBlobTransport({
+  dir: join(dataDir, "blob-chunks"),
+  nowSeconds: () => Math.floor(Date.now() / 1000),
+});
 const relay = createRelay({
   store,
   tls: { cert, key },
   mailboxLimitPerHour: mailboxLimit,
   pushSender,
+  blobTransport,
 });
 const addr = await relay.listen(host, port);
 process.stderr.write(JSON.stringify({ event: "listen", address: addr }) + "\n");

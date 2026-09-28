@@ -27,7 +27,11 @@
     <string name="settings_open_source_licenses">Open Source Licenses</string>
     <string name="about_license_blurb">ArmorChat is licensed under the Apache License 2.0. Third-party notices are listed under Open Source Licenses.</string>
     <string name="support_title">Support ArmorChat</string>
-    <string name="support_body">A way to support development will be added here. No payments are collected in this version.</string>
+    <string name="support_body">Need help or have feedback? We\'d love to hear from you.</string>
+    <string name="support_developer_title">Support the Developer</string>
+    <string name="support_developer_body">If ArmorChat is useful to you, consider supporting its development.</string>
+    <string name="support_developer_action">Support the Developer</string>
+    <string name="support_developer_url" translatable="false">https://www.codeyantra.in/payment.html</string>
     <string name="identity_create_title">Create identity</string>
     <string name="identity_create_body">Choose a name and handle. ArmorChat still protects you with a local Ed25519 key that never leaves this device.</string>
     <string name="identity_creating">Creating secure identity…</string>

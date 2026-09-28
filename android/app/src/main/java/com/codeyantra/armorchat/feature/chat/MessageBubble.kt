@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
@@ -49,6 +50,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -81,6 +83,23 @@ import com.codeyantra.armorchat.domain.model.MessageType
 import java.io.File
 import java.text.DateFormat
 import java.util.Date
+
+val LocalDownloadProgress = staticCompositionLocalOf<Map<String, Float>> { emptyMap() }
+
+private fun decodeDisplayBitmap(path: String, maxEdge: Int): androidx.compose.ui.graphics.ImageBitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(path, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    var sample = 1
+    while (bounds.outWidth / sample > maxEdge * 2 || bounds.outHeight / sample > maxEdge * 2) {
+        sample *= 2
+    }
+    val opts = BitmapFactory.Options().apply {
+        inSampleSize = sample.coerceAtLeast(1)
+        inPreferredConfig = Bitmap.Config.ARGB_8888
+    }
+    return BitmapFactory.decodeFile(path, opts)?.asImageBitmap()
+}
 
 @Composable
 fun MessageDateSeparator(label: String, modifier: Modifier = Modifier) {
@@ -324,7 +343,7 @@ fun MessageBubble(
             ) {
                 Box(modifier = Modifier.fillMaxSize()) {
                     val bitmap = remember(file) {
-                        BitmapFactory.decodeFile(file.absolutePath)?.asImageBitmap()
+                        decodeDisplayBitmap(file.absolutePath, 2048)
                     }
                     if (bitmap != null) {
                         Image(
@@ -376,6 +395,8 @@ private fun AttachmentContent(
         AttachmentStorageManager.hasAttachment(context, metadata.attachmentId)
     }
     var downloadState by remember { mutableStateOf<String?>(null) }
+    val downloadPercent = LocalDownloadProgress.current[metadata.attachmentId]
+        ?.let { (it * 100f).toInt().coerceIn(0, 100) }
 
     val isVoice = messageType == MessageType.VOICE ||
         metadata.mediaClass == "voice" ||
@@ -398,7 +419,7 @@ private fun AttachmentContent(
         Column(modifier = Modifier.fillMaxWidth()) {
             if (exists) {
                 val bitmap = remember(file) {
-                    BitmapFactory.decodeFile(file.absolutePath)?.asImageBitmap()
+                    decodeDisplayBitmap(file.absolutePath, 1280)
                 }
                 if (bitmap != null) {
                     Image(
@@ -448,7 +469,11 @@ private fun AttachmentContent(
                             )
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                text = if (downloadState == "ERROR") "Couldn't verify attachment" else "Tap to download photo",
+                                text = when {
+                                    downloadState == "DOWNLOADING" -> "Downloading ${downloadPercent?.let { "$it%" } ?: "…"}"
+                                    downloadState == "ERROR" -> "Couldn't verify attachment"
+                                    else -> "Tap to download photo"
+                                },
                                 style = MaterialTheme.typography.labelMedium,
                                 color = if (isOutgoing) Color.White.copy(alpha = 0.8f) else colors.onSurfaceVariant,
                             )
@@ -500,7 +525,12 @@ private fun AttachmentContent(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = if (exists) formatFileSize(metadata.sizeBytes) else (if (downloadState == "ERROR") "Couldn't verify attachment" else "Download • ${formatFileSize(metadata.sizeBytes)}"),
+                    text = when {
+                        downloadState == "DOWNLOADING" -> "Downloading ${downloadPercent?.let { "$it%" } ?: "…"}"
+                        exists -> formatFileSize(metadata.sizeBytes)
+                        downloadState == "ERROR" -> "Couldn't verify attachment"
+                        else -> "Download • ${formatFileSize(metadata.sizeBytes)}"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = if (downloadState == "ERROR") colors.error else (if (isOutgoing) Color.White.copy(alpha = 0.8f) else colors.onSurfaceVariant),
                 )
@@ -538,6 +568,8 @@ private fun VoiceNoteBar(
         AttachmentStorageManager.getAttachmentFile(context, metadata.attachmentId)
     }
 
+    val downloadPercent = LocalDownloadProgress.current[metadata.attachmentId]
+        ?.let { (it * 100f).toInt().coerceIn(0, 100) }
     var playing by remember { mutableStateOf(false) }
     var player by remember { mutableStateOf<android.media.MediaPlayer?>(null) }
     var progress by remember { mutableFloatStateOf(0f) }
@@ -612,7 +644,11 @@ private fun VoiceNoteBar(
         Spacer(Modifier.width(8.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = if (!exists) "Voice message — tap to download" else "Voice message",
+                text = when {
+                    downloadState == "DOWNLOADING" -> "Downloading ${downloadPercent?.let { "$it%" } ?: "…"}"
+                    !exists -> "Voice message — tap to download"
+                    else -> "Voice message"
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (isOutgoing) Color.White else colors.onSurface,
             )

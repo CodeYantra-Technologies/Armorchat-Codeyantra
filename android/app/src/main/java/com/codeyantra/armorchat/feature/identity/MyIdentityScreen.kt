@@ -4,8 +4,12 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
 import android.widget.Toast
+import androidx.core.content.FileProvider
+import java.io.File
+import java.io.FileOutputStream
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -87,6 +91,28 @@ import com.codeyantra.armorchat.ui.qr.QrBitmapEncoder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/**
+ * Shares the QR itself as an image (not the underlying contact text/id), so the
+ * recipient gets a picture they can scan or import from their gallery, the same
+ * way "My ArmorChat QR" is meant to be added.
+ */
+private fun shareQrImage(context: Context, qrBitmap: Bitmap, caption: String) {
+    runCatching {
+        val file = File(context.cacheDir, "armorchat_qr.png")
+        FileOutputStream(file).use { out -> qrBitmap.compress(Bitmap.CompressFormat.PNG, 100, out) }
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "image/png"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_TEXT, caption)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(send, "Share ArmorChat QR"))
+    }.onFailure {
+        Toast.makeText(context, "Couldn't share QR", Toast.LENGTH_SHORT).show()
+    }
+}
 
 @Composable
 fun MyIdentityRoute(
@@ -448,20 +474,15 @@ fun MyIdentityScreen(
                         ) {
                             OutlinedButton(
                                 onClick = {
-                                    val shareText = buildString {
-                                        append(shownName)
-                                        if (shownHandle.isNotBlank()) append(" ($shownHandle)")
-                                        if (qrContent != null) {
-                                            append("\n")
-                                            append(qrContent)
-                                        }
+                                    val bitmap = qrBitmap
+                                    if (bitmap != null) {
+                                        val caption = "$shownName ($shownHandle) — scan this QR to add me on ArmorChat."
+                                        shareQrImage(context, bitmap, caption)
+                                    } else {
+                                        Toast.makeText(context, "QR not ready yet", Toast.LENGTH_SHORT).show()
                                     }
-                                    val send = Intent(Intent.ACTION_SEND).apply {
-                                        type = "text/plain"
-                                        putExtra(Intent.EXTRA_TEXT, shareText)
-                                    }
-                                    context.startActivity(Intent.createChooser(send, "Share ArmorChat Contact"))
                                 },
+                                enabled = qrBitmap != null,
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(44.dp),

@@ -3,6 +3,7 @@ package com.codeyantra.armorchat.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Email
@@ -72,6 +73,13 @@ private val DETERMINISTIC_MOTIFS = listOf(
     WallpaperMotif(0.72f, 0.92f, 34f, 10f, WallpaperMotifType.LOCK, 0.7f),
     WallpaperMotif(0.12f, 0.96f, 36f, -12f, WallpaperMotifType.KEY, 0.6f),
     WallpaperMotif(0.48f, 0.98f, 38f, 20f, WallpaperMotifType.FINGERPRINT, 0.65f),
+    // Fill gaps with more of the core security tier (lock/key/fingerprint/wifi)
+    WallpaperMotif(0.65f, 0.13f, 34f, 8f, WallpaperMotifType.SECURITY, 0.65f),
+    WallpaperMotif(0.92f, 0.28f, 36f, -18f, WallpaperMotifType.FINGERPRINT, 0.6f),
+    WallpaperMotif(0.38f, 0.53f, 32f, 20f, WallpaperMotifType.KEY, 0.6f),
+    WallpaperMotif(0.92f, 0.62f, 38f, -10f, WallpaperMotifType.WIFI, 0.65f),
+    WallpaperMotif(0.25f, 0.70f, 34f, 14f, WallpaperMotifType.WIFI, 0.55f),
+    WallpaperMotif(0.04f, 0.85f, 36f, -16f, WallpaperMotifType.LOCK, 0.65f),
 )
 
 @Composable
@@ -94,17 +102,22 @@ fun ChatWallpaper(
     val securityPainter = rememberVectorPainter(Icons.Outlined.Security)
 
     // Theme-specific background and icon colors
-    val backgroundColor = if (isDark) Color(0xFF07101B) else Color(0xFFF0F4F8)
-    val primaryShieldColor = if (isDark) Color(0xFF29C5F6) else Color(0xFF0077B6)
-    val secondaryMotifColor = if (isDark) Color(0xFF16324D) else Color(0xFF7A9BB5)
+    val backgroundTop = if (isDark) Color(0xFF0A1622) else Color(0xFFF6F9FC)
+    val backgroundBottom = if (isDark) Color(0xFF060D16) else Color(0xFFEAF0F6)
+    val primaryShieldColor = if (isDark) Color(0xFF35CFFF) else Color(0xFF0077B6)
+    val coreSecurityColor = if (isDark) Color(0xFF2E9AD1) else Color(0xFF3E8FB0)
+    val ambientMotifColor = if (isDark) Color(0xFF1C3A54) else Color(0xFF9AB4C6)
 
-    val shieldAlpha = if (isDark) 0.13f else 0.09f
-    val secondaryAlpha = if (isDark) 0.06f else 0.045f
+    // Shields read as the hero motif; lock/key/fingerprint/wifi/security form a
+    // clearly-visible "core security" tier; chat/envelope/device stay faint texture.
+    val shieldAlpha = if (isDark) 0.16f else 0.11f
+    val coreSecurityAlpha = if (isDark) 0.13f else 0.09f
+    val ambientAlpha = if (isDark) 0.055f else 0.04f
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(backgroundColor)
+            .background(Brush.verticalGradient(listOf(backgroundTop, backgroundBottom)))
             .drawBehind {
                 val canvasWidth = size.width
                 val canvasHeight = size.height
@@ -114,9 +127,22 @@ fun ChatWallpaper(
                     val y = motif.yRatio * canvasHeight
                     val sizePx = motif.sizeDp * density
 
+                    val isCoreSecurity = motif.type == WallpaperMotifType.LOCK ||
+                        motif.type == WallpaperMotifType.KEY ||
+                        motif.type == WallpaperMotifType.FINGERPRINT ||
+                        motif.type == WallpaperMotifType.WIFI ||
+                        motif.type == WallpaperMotifType.SECURITY
                     val isShield = motif.type == WallpaperMotifType.SHIELD
-                    val motifColor = if (isShield) primaryShieldColor else secondaryMotifColor
-                    val baseAlpha = if (isShield) shieldAlpha else secondaryAlpha
+                    val motifColor = when {
+                        isShield -> primaryShieldColor
+                        isCoreSecurity -> coreSecurityColor
+                        else -> ambientMotifColor
+                    }
+                    val baseAlpha = when {
+                        isShield -> shieldAlpha
+                        isCoreSecurity -> coreSecurityAlpha
+                        else -> ambientAlpha
+                    }
                     val finalAlpha = baseAlpha * motif.alphaFactor
 
                     val painter = when (motif.type) {

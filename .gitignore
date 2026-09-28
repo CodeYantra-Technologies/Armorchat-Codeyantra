@@ -11,9 +11,27 @@ build/
 android/native/*/target/
 android/native/**/target/
 
-# Built app artifacts (large, regenerable)
-artifacts/*.apk
-artifacts/**/*.apk
+# Android local build, SDK path, and signing material
+android/.gradle/
+android/.kotlin/
+android/**/build/
+android/local.properties
+android/keystore/
+*.jks
+*.keystore
+keystore.properties
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Unused local folders — QA captures, built APKs, diagnostic dumps, stray media
+artifacts/
+screenshots/
+attachments/
+
+# Local agent notes
+AGENTS Task.md
 
 # OS
 .DS_Store
