@@ -158,7 +158,7 @@ class ReplyMessageInfoMigrationTest {
             assertNull(message.readAtEpochMs)
             db.openHelper.readableDatabase.query("PRAGMA user_version").use { cursor ->
                 assertTrue(cursor.moveToFirst())
-                assertEquals(12, cursor.getInt(0))
+                assertEquals(13, cursor.getInt(0))
             }
         } finally {
             db.close()

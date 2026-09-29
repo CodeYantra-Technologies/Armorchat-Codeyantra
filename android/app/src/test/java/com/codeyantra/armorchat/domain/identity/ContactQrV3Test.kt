@@ -146,6 +146,18 @@ class ContactQrV3Test {
     }
 
     @Test
+    fun defaultExpiryLeavesRoomForPhoneClockAheadOfRelay() {
+        val token = InviteToken.generate()
+        val bundle = validBundle(token)
+        // Relay rejects expires_at > server_now + TTL. A phone up to 5 min ahead must still pass.
+        assertThat(bundle.expiresAt - bundle.issuedAt).isEqualTo(InviteToken.TTL_SECONDS - 300L)
+        val relayNowFiveMinBehind = now - 300L
+        assertThat(bundle.expiresAt).isAtMost(relayNowFiveMinBehind + InviteToken.TTL_SECONDS)
+        assertThat(ContactBundleV3.parse(bundle.toJson(), token, now, registry).expiresAt)
+            .isEqualTo(bundle.expiresAt)
+    }
+
+    @Test
     fun tamperedFieldsFailVerification() {
         val token = InviteToken.generate()
         val json = validBundle(token).toJson()

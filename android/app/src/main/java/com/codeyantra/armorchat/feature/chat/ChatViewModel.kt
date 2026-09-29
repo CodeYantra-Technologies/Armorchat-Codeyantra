@@ -194,7 +194,13 @@ class ChatViewModel @Inject constructor(
     private var chatVisible = false
 
     init {
-        // initialized via flow emission
+        viewModelScope.launch {
+            contactFlow.collect { contact ->
+                if (contact == null) return@collect
+                runCatching { messaging.ensureProvisioned(contact) }
+                runCatching { messaging.syncContact(contact.id) }
+            }
+        }
     }
 
     fun onDraftChange(newDraft: String) {
@@ -229,7 +235,8 @@ class ChatViewModel @Inject constructor(
     fun syncNow() {
         val contactId = state.value.contact?.id ?: return
         viewModelScope.launch {
-            messaging.syncContact(contactId)
+            // Offline / DNS failure must not crash the chat screen (Main dispatcher).
+            runCatching { messaging.syncContact(contactId) }
             if (chatVisible) markVisibleInbound()
         }
     }

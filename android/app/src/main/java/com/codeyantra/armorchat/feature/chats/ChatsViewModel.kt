@@ -8,17 +8,13 @@ import com.codeyantra.armorchat.domain.model.MessageType
 import com.codeyantra.armorchat.domain.repository.ContactRepository
 import com.codeyantra.armorchat.domain.repository.ConversationRepository
 import com.codeyantra.armorchat.domain.repository.MessageRepository
-import com.codeyantra.armorchat.messaging.ChatMessagingController
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
 
 data class ChatListItem(
     val conversationId: String,
@@ -38,25 +34,9 @@ class ChatsViewModel @Inject constructor(
     conversationRepository: ConversationRepository,
     contactRepository: ContactRepository,
     messageRepository: MessageRepository,
-    messaging: ChatMessagingController,
 ) : ViewModel() {
 
     val searchQuery = MutableStateFlow("")
-
-    init {
-        viewModelScope.launch {
-            while (true) {
-                runCatching {
-                    messaging.pollIncomingInvites()
-                    val currentContacts = contactRepository.observeContacts().first()
-                    for (contact in currentContacts) {
-                        messaging.syncContact(contact.id)
-                    }
-                }
-                delay(3_000)
-            }
-        }
-    }
 
     private val allListItems = combine(
         conversationRepository.observeConversations(),

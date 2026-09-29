@@ -1,6 +1,7 @@
 package com.codeyantra.armorchat.messaging
 
 import com.codeyantra.armorchat.core.network.ImmutableRelayEnvelope
+import com.codeyantra.armorchat.core.network.LeasedRelayEnvelope
 import com.codeyantra.armorchat.core.network.MailboxRegistration
 import com.codeyantra.armorchat.core.network.RelayClient
 import com.codeyantra.armorchat.core.network.RelayFetchResult
@@ -514,6 +515,44 @@ class SessionOrchestrator(
         return link.receipts.acceptedPlaintexts() - before.toSet()
     }
 
+    /**
+     * A mesh courier handed us a sealed relay envelope. Try every live session.
+     * Relay consume is skipped: there is no lease. A failed decrypt restores
+     * the MLS snapshot so a courier copy cannot burn the session.
+     */
+    suspend fun offerMesh(
+        canonical: String,
+        persistInbound: suspend (peerPin: String, InboundRecord) -> Unit,
+    ): Boolean {
+        val env = parseMeshEnvelope(canonical) ?: return false
+        if (env.payloadType != ImmutableRelayEnvelope.PAYLOAD_APPLICATION) return false
+        val item = LeasedRelayEnvelope(
+            messageId = env.messageId,
+            envelopeSha256 = "mesh",
+            encryptedPayloadB64 = env.encryptedPayloadB64,
+            payloadType = env.payloadType,
+            expiresAt = env.expiresAt,
+            leaseToken = "mesh",
+            leaseUntil = 0,
+            senderCredentialCanonical = env.senderCredentialCanonical,
+        )
+        for ((pin, link) in links.toList()) {
+            if (pin == INVITE_PEER) continue
+            val snap = runCatching { link.peer.snapshot() }.getOrNull()
+            val accepted = try {
+                link.receipts.processLeased(item, consumeOnSuccess = false) { record ->
+                    persistInbound(pin, record)
+                }
+                true
+            } catch (_: Exception) {
+                if (snap != null) runCatching { link.peer.restore(snap) }
+                false
+            }
+            if (accepted) return true
+        }
+        return false
+    }
+
     suspend fun sendText(peerPin: String, text: String, replyTo: ReplyMetadata? = null): OutboundRecord {
         check(!policy.blocksNetwork()) { "network unavailable" }
         val link = links[peerPin] ?: error("session missing")
@@ -690,6 +729,26 @@ class SessionOrchestrator(
     }
 
     private fun unused(value: Any?) = Unit
+
+    private fun parseMeshEnvelope(raw: String): ImmutableRelayEnvelope? {
+        return runCatching {
+            val obj = org.json.JSONObject(raw)
+            ImmutableRelayEnvelope(
+                protocolVersion = obj.getInt("protocol_version"),
+                suite = obj.optString("suite", ImmutableRelayEnvelope.SUITE),
+                messageId = obj.getString("message_id"),
+                recipientMailbox = obj.getString("recipient_mailbox"),
+                expiresAt = obj.getLong("expires_at"),
+                payloadType = obj.getString("payload_type"),
+                encryptedPayloadB64 = obj.getString("encrypted_payload"),
+                senderCredentialCanonical = if (obj.has("sender_credential")) {
+                    obj.get("sender_credential").toString()
+                } else {
+                    null
+                },
+            )
+        }.getOrNull()
+    }
 
     companion object {
         const val INVITE_PEER = "__local_invite__"

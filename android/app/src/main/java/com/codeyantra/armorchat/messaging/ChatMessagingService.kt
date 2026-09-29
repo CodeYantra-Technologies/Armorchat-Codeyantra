@@ -6,6 +6,7 @@ import com.codeyantra.armorchat.core.blob.LargeBlobTransfer
 import com.codeyantra.armorchat.core.blob.LargeOutgoing
 import com.codeyantra.armorchat.core.blob.PublishResult
 import com.codeyantra.armorchat.core.common.AppClock
+import com.codeyantra.armorchat.core.mesh.EmergencyMeshEngine
 import com.codeyantra.armorchat.core.common.AppDispatchers
 import com.codeyantra.armorchat.core.database.dao.ContactSessionDao
 import com.codeyantra.armorchat.core.database.dao.ConversationDao
@@ -34,9 +35,15 @@ import com.codeyantra.armorchat.domain.repository.IdentityRepository
 import com.codeyantra.armorchat.domain.repository.SendTextResult
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -62,6 +69,7 @@ class ChatMessagingService @Inject constructor(
     private val dispatchers: AppDispatchers,
     private val pushTokenRegistrar: PushTokenRegistrar,
     private val notificationManager: com.codeyantra.armorchat.notification.ArmorChatNotificationManager,
+    private val mesh: EmergencyMeshEngine,
 ) : ChatMessagingController {
     private val nowSeconds: () -> Long = { clock.nowEpochMs() / 1000 }
     private val orchestrator = SessionOrchestrator(
@@ -72,6 +80,7 @@ class ChatMessagingService @Inject constructor(
         nowSeconds = nowSeconds,
     )
     private val mutex = Mutex()
+    private val keepAlive = CoroutineScope(SupervisorJob() + dispatchers.io)
     private val enabled = true
     private val contactPins = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val largeBlobs by lazy {
@@ -90,6 +99,17 @@ class ChatMessagingService @Inject constructor(
 
     init {
         largeBlobs.kick()
+        keepAlive.launch {
+            while (isActive) {
+                runCatching { pollIncomingInvites() }
+                runCatching {
+                    contactRepository.observeContacts().first().forEach { contact ->
+                        runCatching { syncContact(contact.id) }
+                    }
+                }
+                delay(3_000)
+            }
+        }
     }
 
     override val network: StateFlow<NetworkAvailability> = policy.availability
@@ -362,6 +382,11 @@ class ChatMessagingService @Inject constructor(
                     "envelope_submit_ok",
                     "msg=${SafeLog.shortRef(record.messageId)} status=${record.progress.status}",
                 )
+                if (mesh.armed && record.progress.status != MessageStatus.SENT) {
+                    record.envelopeCanonical?.toByteArray(Charsets.UTF_8)?.let { sealed ->
+                        mesh.holdSealed(sealed, emergency = true)
+                    }
+                }
                 val createdAt = clock.nowEpochMs()
                 if (messageDao.findById(record.messageId) == null) {
                     messageDao.insert(
@@ -384,6 +409,26 @@ class ChatMessagingService @Inject constructor(
                 persist(contact)
                 SendTextResult.Queued(record.messageId, record.progress.status)
             }
+        }
+    }
+
+    suspend fun deliverMesh(payload: ByteArray): Boolean {
+        if (payload.isEmpty()) return false
+        val raw = runCatching { payload.toString(Charsets.UTF_8) }.getOrNull() ?: return false
+        if (!raw.startsWith("{")) return false
+        return orchestrator.offerMesh(raw) { peerPin, inbound ->
+            val contact = contactRepository.findByPublicKey(peerPin) ?: error("mesh contact missing")
+            val row = conversationDao.findByContactId(contact.id) ?: error("mesh conversation missing")
+            persistInbound(
+                com.codeyantra.armorchat.domain.model.Conversation(
+                    id = row.id,
+                    contactId = row.contactId,
+                    title = row.title,
+                    updatedAtEpochMs = row.updatedAtEpochMs,
+                ),
+                contact,
+                inbound,
+            )
         }
     }
 

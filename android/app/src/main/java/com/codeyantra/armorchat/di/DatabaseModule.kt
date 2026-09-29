@@ -51,4 +51,8 @@ object DatabaseModule {
     @Provides
     fun localInviteDao(db: ArmorChatDatabase): com.codeyantra.armorchat.core.database.dao.LocalInviteDao =
         db.localInviteDao()
+
+    @Provides
+    fun meshCustodyDao(db: ArmorChatDatabase): com.codeyantra.armorchat.core.database.dao.MeshCustodyDao =
+        db.meshCustodyDao()
 }

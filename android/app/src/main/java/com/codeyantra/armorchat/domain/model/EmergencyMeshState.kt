@@ -4,12 +4,12 @@ enum class EmergencyMeshStatus(
     val displayTitle: String,
     val description: String,
 ) {
-    UNAVAILABLE("Coming Soon", "Experimental — unavailable in this build"),
-    STANDBY("Standby", "Monitoring network connectivity"),
-    SEARCHING("Searching", "Searching for nearby secure routes"),
-    CONNECTED("Connected", "Connected to local mesh route"),
-    RELAYING("Relaying", "Relaying encrypted payload"),
-    INTERNET_RESTORED("Primary Relay", "Internet restored — primary relay preferred"),
+    UNAVAILABLE("Unavailable", "This phone cannot open Bluetooth"),
+    STANDBY("Standby", "Saved on this phone until you listen again"),
+    SEARCHING("Listening", "Bluetooth is watching for a nearby ArmorChat device"),
+    CONNECTED("In contact", "A nearby device is carrying sealed messages"),
+    RELAYING("Carrying", "Handing a sealed message to a nearby device"),
+    INTERNET_RESTORED("Relay", "Internet relay is preferred when it accepts the message"),
 }
 
 data class MeshHop(

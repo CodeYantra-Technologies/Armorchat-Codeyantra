@@ -1,5 +1,7 @@
 package com.codeyantra.armorchat.feature.settings
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -37,7 +39,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -47,6 +48,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -63,7 +65,13 @@ fun EmergencyMeshScreen(
     viewModel: EmergencyMeshViewModel = hiltViewModel(),
 ) {
     val colors = MaterialTheme.colorScheme
+    val runtime by viewModel.runtime.collectAsStateWithLifecycle()
     var showHowItWorksDetails by rememberSaveable { mutableStateOf(false) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { granted ->
+        if (granted.values.all { it }) viewModel.setArmed(true)
+    }
 
     Scaffold(
         containerColor = colors.background,
@@ -152,7 +160,7 @@ fun EmergencyMeshScreen(
                             shape = RoundedCornerShape(12.dp),
                         ) {
                             Text(
-                                text = viewModel.meshStatus.description,
+                                text = runtime.status.description,
                                 style = MaterialTheme.typography.labelMedium,
                                 color = colors.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
@@ -165,14 +173,14 @@ fun EmergencyMeshScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
                         Text(
-                            text = "Runtime Mesh State",
+                            text = "On this phone",
                             style = MaterialTheme.typography.bodyMedium,
                             color = colors.onSurfaceVariant,
                         )
                         Text(
-                            text = "Inactive",
+                            text = holdLabel(runtime.holding, runtime.soonestExpireAtMs),
                             style = MaterialTheme.typography.labelLarge,
-                            color = colors.onSurfaceVariant,
+                            color = colors.onSurface,
                         )
                     }
                 }
@@ -198,37 +206,30 @@ fun EmergencyMeshScreen(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
                                 Text(
-                                    text = "Use Emergency Mesh automatically",
+                                    text = "Listen for nearby devices",
                                     style = MaterialTheme.typography.titleMedium,
-                                    color = colors.onSurface.copy(alpha = 0.6f),
+                                    color = colors.onSurface,
                                 )
-                                Surface(
-                                    color = colors.surfaceVariant,
-                                    shape = RoundedCornerShape(8.dp),
-                                ) {
-                                    Text(
-                                        text = "Coming soon",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = colors.onSurfaceVariant,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                    )
-                                }
                             }
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                text = "Use nearby secure routes only when the internet is unavailable or too unstable.",
+                                text = "While this is on, a sealed message the relay did not accept stays on this phone for 4 hours and can leave with the next ArmorChat device.",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = colors.onSurfaceVariant.copy(alpha = 0.7f),
+                                color = colors.onSurfaceVariant,
                             )
                         }
 
                         Switch(
-                            checked = false,
-                            onCheckedChange = null,
-                            enabled = false,
-                            colors = SwitchDefaults.colors(
-                                disabledUncheckedTrackColor = colors.surfaceVariant,
-                            ),
+                            checked = runtime.armed,
+                            onCheckedChange = { enabled ->
+                                if (!enabled) {
+                                    viewModel.setArmed(false)
+                                } else {
+                                    val missing = viewModel.missingPermissions()
+                                    if (missing.isEmpty()) viewModel.setArmed(true)
+                                    else permissionLauncher.launch(missing.toTypedArray())
+                                }
+                            },
                         )
                     }
                 }
@@ -285,10 +286,10 @@ fun EmergencyMeshScreen(
                         )
 
                         MeshNodeCard(
-                            title = "Nearby ArmorChat Device (Future)",
-                            subtitle = "Encrypted Local Mesh Relay",
+                            title = "Nearby ArmorChat device",
+                            subtitle = "Bluetooth, or Wi-Fi Direct for a large batch",
                             icon = Icons.Outlined.Hub,
-                            active = false,
+                            active = runtime.armed,
                         )
 
                         Icon(
@@ -312,7 +313,7 @@ fun EmergencyMeshScreen(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
-                            text = "Current Active Route: Primary Relay Only (Mesh Inactive)",
+                            text = "Carried ${runtime.forwarded} · delivered on this phone ${runtime.deliveredHere} · path ${runtime.lastPath}",
                             style = MaterialTheme.typography.labelSmall,
                             color = colors.onSurfaceVariant,
                             textAlign = TextAlign.Center,
@@ -351,10 +352,11 @@ fun EmergencyMeshScreen(
 
                     HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
 
-                    MeshBulletPoint("When direct network access is unavailable, ArmorChat may use nearby ArmorChat devices to help carry encrypted messages.")
-                    MeshBulletPoint("Intermediate devices cannot read message content.")
-                    MeshBulletPoint("Normal secure relay routing is preferred whenever internet access is available.")
-                    MeshBulletPoint("Private keys remain on user devices; intermediate nodes only forward opaque encrypted data.")
+                    MeshBulletPoint("With nobody nearby, the sealed message stays on your phone. It is not floating in the air.")
+                    MeshBulletPoint("It remains carryable for 4 hours from the moment it was sealed. A device that arrives at 3 hours 59 minutes can still take it. At 4 hours it is deleted.")
+                    MeshBulletPoint("A hop does not restart those 4 hours. Every phone holding a copy uses the same deadline.")
+                    MeshBulletPoint("Bluetooth finds the other phone and carries small bundles. A batch over 8 KB tries Wi-Fi Direct, then falls back to Bluetooth.")
+                    MeshBulletPoint("A phone in the middle cannot read the message. The internet relay is still used when it accepts the send.")
 
                     TextButton(
                         onClick = { showHowItWorksDetails = !showHowItWorksDetails },
@@ -368,10 +370,10 @@ fun EmergencyMeshScreen(
                     if (showHowItWorksDetails) {
                         HorizontalDivider(color = colors.outline.copy(alpha = 0.2f))
                         Text(
-                            text = "• End-to-end encryption remains enforced at all times.\n" +
-                                   "• Nearby peer discovery will operate locally without cloud tracking.\n" +
-                                   "• Mesh routing will activate strictly based on real network health and user preferences.\n" +
-                                   "• Primary relay transport remains the preferred default when connected.",
+                            text = "• Couriers store opaque ciphertext only.\n" +
+                                   "• Discovery uses a rotating nonce, not your ArmorChat id.\n" +
+                                   "• ${runtime.note}\n" +
+                                   "• ${runtime.radioDetail.ifBlank { "Last path: ${runtime.lastPath}. Carried ${runtime.forwarded}. Delivered here ${runtime.deliveredHere}." }}",
                             style = MaterialTheme.typography.bodySmall,
                             color = colors.onSurfaceVariant,
                         )
@@ -454,6 +456,17 @@ private fun MeshNodeCard(
             }
         }
     }
+}
+
+private fun holdLabel(holding: Int, expireAtMs: Long?): String {
+    if (holding == 0 || expireAtMs == null) return "Nothing waiting"
+    val left = expireAtMs - System.currentTimeMillis()
+    if (left <= 0L) return "Deadline reached"
+    val minutes = left / 60_000L
+    val hours = minutes / 60L
+    val mins = minutes % 60L
+    val remain = if (hours > 0) "${hours}h ${mins}m" else "${mins}m"
+    return "$holding sealed · $remain left"
 }
 
 @Composable

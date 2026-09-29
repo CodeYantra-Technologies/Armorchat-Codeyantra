@@ -124,9 +124,9 @@ fun SettingsScreen(
                 HorizontalDivider(color = colors.outline.copy(alpha = 0.15f), modifier = Modifier.padding(start = 56.dp))
                 SettingsCardRow(
                     title = "Emergency Mesh",
-                    subtitle = "Stay reachable when internet is unavailable",
+                    subtitle = "Bluetooth and Wi-Fi Direct carry a sealed message for 4 hours",
                     icon = Icons.Outlined.Hub,
-                    badge = "Coming soon",
+                    badge = "4 hour hold",
                     onClick = onEmergencyMesh,
                 )
             }

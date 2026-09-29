@@ -107,7 +107,8 @@ data class ContactBundleV3(
             mailboxId: String,
             deviceId: String,
             nowEpochSeconds: Long,
-            ttlSeconds: Long = InviteToken.TTL_SECONDS,
+            // Relay rejects expires_at > server_now + TTL; leave room for phone clock skew.
+            ttlSeconds: Long = InviteToken.TTL_SECONDS - 300L,
         ): ContactBundleV3 {
             val canonicalToken = InviteToken.parseCanonical(token)
             require(ttlSeconds in 1..InviteToken.TTL_SECONDS) { "invite ttl" }

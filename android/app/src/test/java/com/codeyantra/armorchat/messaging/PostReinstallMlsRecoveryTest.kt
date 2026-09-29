@@ -95,6 +95,55 @@ class PostReinstallMlsRecoveryTest {
     }
 
     @Test
+    fun unconfirmedGroupIsNotTornDownWhilePeerIsSlow() = runBlocking {
+        val network = InMemoryRelayNetwork(origin)
+        val alice = TinkSigner()
+        val bob = TinkSigner()
+        val aliceOrch = orch(network)
+        val bobOrch = orch(network)
+        aliceOrch.provision(alice, bob.pin)
+        bobOrch.provision(bob, alice.pin)
+        aliceOrch.importPeerRoute(bobOrch.localRouteQr(alice.pin)!!, alice)
+        aliceOrch.establish(bob.pin)
+        val aliceSession = aliceOrch.link(bob.pin)!!.peer.sessionId
+        assertThat(aliceSession).isNotNull()
+
+        // Peer stays offline past the establish backoff while the UI / keep-alive
+        // loop keeps calling establish(). The pending Welcome must stay valid.
+        now += 16
+        aliceOrch.establish(bob.pin)
+        now += 16
+        aliceOrch.establish(bob.pin)
+        assertThat(aliceOrch.link(bob.pin)!!.peer.sessionId).isEqualTo(aliceSession)
+
+        bobOrch.tryAdoptInvite(alice.pin)
+        bobOrch.sync(alice.pin)
+        val bobSession = bobOrch.link(alice.pin)!!.peer.sessionId
+        // Joiner opens the chat (establish) before the initiator has answered.
+        now += 16
+        bobOrch.establish(alice.pin)
+        assertThat(bobOrch.link(alice.pin)!!.peer.groupCreated).isTrue()
+        assertThat(bobOrch.link(alice.pin)!!.peer.sessionId).isEqualTo(bobSession)
+
+        aliceOrch.sync(bob.pin)
+        bobOrch.sync(alice.pin)
+        aliceOrch.sync(bob.pin)
+        bobOrch.sync(alice.pin)
+        assertThat(aliceOrch.sessionView(alice.pin, bob.pin).state)
+            .isEqualTo(SecureSessionState.ESTABLISHED)
+        assertThat(bobOrch.sessionView(bob.pin, alice.pin).state)
+            .isEqualTo(SecureSessionState.ESTABLISHED)
+        assertThat(aliceOrch.sessionView(alice.pin, bob.pin).composerAllowed).isTrue()
+        assertThat(bobOrch.sessionView(bob.pin, alice.pin).composerAllowed).isTrue()
+        assertThat(aliceOrch.link(bob.pin)!!.peer.sessionId)
+            .isEqualTo(bobOrch.link(alice.pin)!!.peer.sessionId)
+
+        val sent = aliceOrch.sendText(bob.pin, "after-slow-peer")
+        assertThat(sent.progress.status).isEqualTo(MessageStatus.SENT)
+        assertThat(bobOrch.sync(alice.pin)).contains("after-slow-peer")
+    }
+
+    @Test
     fun restoredGroupFlagWithoutSnapshotIsUnusable() = runBlocking {
         val network = InMemoryRelayNetwork(origin)
         val alice = TinkSigner()

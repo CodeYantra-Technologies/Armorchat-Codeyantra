@@ -2,6 +2,7 @@ package com.codeyantra.armorchat
 
 import android.app.Application
 import android.util.Log
+import com.codeyantra.armorchat.core.mesh.EmergencyMeshEngine
 import com.codeyantra.armorchat.fcm.FcmWake
 import com.codeyantra.armorchat.fcm.PushTokenRegistrar
 import com.codeyantra.armorchat.notification.ArmorChatNotificationManager
@@ -14,11 +15,13 @@ import javax.inject.Inject
 class ArmorChatApplication : Application() {
     @Inject lateinit var pushTokenRegistrar: PushTokenRegistrar
     @Inject lateinit var notificationManager: ArmorChatNotificationManager
+    @Inject lateinit var emergencyMesh: EmergencyMeshEngine
 
     override fun onCreate() {
         super.onCreate()
         notificationManager.createNotificationChannels()
         initFirebase()
+        emergencyMesh.resumeIfArmed()
     }
 
     private fun initFirebase() {

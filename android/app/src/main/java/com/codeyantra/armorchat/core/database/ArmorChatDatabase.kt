@@ -7,12 +7,14 @@ import com.codeyantra.armorchat.core.database.dao.ContactSessionDao
 import com.codeyantra.armorchat.core.database.dao.ConversationDao
 import com.codeyantra.armorchat.core.database.dao.IdentityDao
 import com.codeyantra.armorchat.core.database.dao.LocalInviteDao
+import com.codeyantra.armorchat.core.database.dao.MeshCustodyDao
 import com.codeyantra.armorchat.core.database.dao.MessageDao
 import com.codeyantra.armorchat.core.database.entity.ContactEntity
 import com.codeyantra.armorchat.core.database.entity.ContactSessionEntity
 import com.codeyantra.armorchat.core.database.entity.ConversationEntity
 import com.codeyantra.armorchat.core.database.entity.IdentityEntity
 import com.codeyantra.armorchat.core.database.entity.LocalInviteEntity
+import com.codeyantra.armorchat.core.database.entity.MeshCustodyEntity
 import com.codeyantra.armorchat.core.database.entity.MessageEntity
 
 @Database(
@@ -23,8 +25,9 @@ import com.codeyantra.armorchat.core.database.entity.MessageEntity
         MessageEntity::class,
         ContactSessionEntity::class,
         LocalInviteEntity::class,
+        MeshCustodyEntity::class,
     ],
-    version = 12,
+    version = 13,
     exportSchema = true,
 )
 abstract class ArmorChatDatabase : RoomDatabase() {
@@ -34,4 +37,5 @@ abstract class ArmorChatDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
     abstract fun contactSessionDao(): ContactSessionDao
     abstract fun localInviteDao(): LocalInviteDao
+    abstract fun meshCustodyDao(): MeshCustodyDao
 }
