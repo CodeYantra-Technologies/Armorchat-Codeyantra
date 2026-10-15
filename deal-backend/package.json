@@ -1,0 +1,16 @@
+{
+  "name": "armor-deal-backend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Armor Deal Phase 1 local Worker, D1, and R2 foundation. Do not deploy.",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "sql.js": "^1.12.0"
+  }
+}

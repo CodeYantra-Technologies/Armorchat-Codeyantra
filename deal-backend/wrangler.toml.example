@@ -1,0 +1,19 @@
+# Example only. Do not deploy Armor Deal Phase 1.
+# No production authentication provider is configured.
+# The worker refuses AUTH_MODE=local-test when ENVIRONMENT=production.
+name = "armor-deal"
+main = "src/worker.mjs"
+compatibility_date = "2026-01-01"
+
+[vars]
+ENVIRONMENT = "production"
+# AUTH_MODE must be a reviewed provider. "local-test" is rejected in production.
+
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "armor-deal"
+# database_id = "replace-after-approval"
+
+# [[r2_buckets]]
+# binding = "BUCKET"
+# bucket_name = "armor-deal-objects"
