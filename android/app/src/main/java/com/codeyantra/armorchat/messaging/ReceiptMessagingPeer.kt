@@ -7,6 +7,8 @@ import com.codeyantra.armorchat.core.network.RelaySubmitResult
 import com.codeyantra.armorchat.domain.identity.Base64Url
 import com.codeyantra.armorchat.domain.model.MessageStatus
 import java.security.SecureRandom
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 /**
  * Test-only authenticated send/receive with receipts and exact-ciphertext retry.
@@ -23,6 +25,14 @@ class ReceiptMessagingPeer(
 ) {
     val store = LocalMessagingStore()
     var submitInterceptor: ((ImmutableRelayEnvelope) -> RelaySubmitResult?)? = null
+    /**
+     * Mesh-1K-O (P3): verification-only receipt targets rebuilt from durable outgoing rows
+     * (MeshReceiptAck.durableTargets). Receipt validation consults it ONLY when [store] has no record
+     * for the target (e.g. after a process restart). The Mesh ingest path installs and clears it under
+     * the messaging mutex around one offer; it is empty everywhere else, so relay processing is unchanged.
+     */
+    @Volatile
+    var verificationTargets: Map<String, OutboundRecord> = emptyMap()
     var diagnostics = MessagingDiagnostics()
         private set
 
@@ -202,6 +212,39 @@ class ReceiptMessagingPeer(
         }
     }
 
+    /**
+     * Mesh-1K-O (P3): the sealed DELIVERY receipt envelope (canonical JSON) for an accepted inbound user
+     * message, for Mesh custody. Reuses the existing receipt intent (newReceiptIntent, created when the
+     * message was accepted) and the existing [encryptReceipt] (same inner record, same MLS path). An
+     * intent that is already sealed (e.g. by a relay flush) is returned unchanged, so relay and Mesh
+     * carry the IDENTICAL ciphertext. Returns null (nothing sealed, nothing changed) when there is no
+     * accepted inbound user message, no live queued DELIVERY intent bound to it, or the stored canonical
+     * does not match its envelope. Caller holds the messaging mutex and must persist the MLS state
+     * before the returned bytes leave memory (MeshReceiptAck.sealAfterCommit).
+     */
+    fun sealDeliveryReceipt(targetMessageId: String): String? {
+        val inbound = store.inbound(targetMessageId) ?: return null
+        if (!inbound.accepted || !inbound.kind.isUserMessage) return null
+        val intent = store.receipts().firstOrNull {
+            it.kind == InnerKind.DELIVERY && it.target?.targetMessageId == targetMessageId
+        } ?: return null
+        val target = intent.target ?: return null
+        if (target.targetCiphertextSha256 != inbound.ciphertextSha256 || target.targetSessionId != inbound.sessionId) {
+            return null
+        }
+        if (!OutboxPolicy.stillLive(intent.expiresAt, nowSeconds())) return null
+        if (intent.envelope == null) {
+            if (intent.progress.attempt != AttemptState.QUEUED || intent.progress.evidence != DeliveryEvidence.NONE) {
+                return null
+            }
+            encryptReceipt(intent)
+        }
+        val sealed = store.receipt(intent.messageId) ?: return null
+        val env = sealed.envelope ?: return null
+        val canonical = sealed.envelopeCanonical ?: return null
+        return if (canonical == env.canonicalJson()) canonical else null
+    }
+
     suspend fun processLeased(
         item: LeasedRelayEnvelope,
         consumeOnSuccess: Boolean = true,
@@ -246,11 +289,24 @@ class ReceiptMessagingPeer(
             }
             parsed
         } catch (e: Exception) {
-            store.commit {
-                putSeen(seenKey, SeenEnvelope(digest, accepted = false))
+            if (e is UnauthenticatedOuterExpiry) {
+                // The ciphertext decrypted. Only the cleartext outer expires_at disagreed with the
+                // MLS-bound inner expiry. Do not record seen: a later genuine copy of this message
+                // must still be accepted. Restore the pre-decrypt MLS snapshot so the relay path
+                // (which does not restore on its own) cannot burn the session. offerMesh restores
+                // again on the mesh path; that second restore is the same snapshot.
+                peer.restore(mlsBefore)
+            } else {
+                store.commit {
+                    putSeen(seenKey, SeenEnvelope(digest, accepted = false))
+                }
             }
             if (consumeOnSuccess) runCatching { peer.consumeLeased(item) }
-            throw if (e is MessagingProtocolException) e else MessagingProtocolException("inner rejected")
+            throw when (e) {
+                is UnauthenticatedOuterExpiry -> MessagingProtocolException("expiry")
+                is MessagingProtocolException -> e
+                else -> MessagingProtocolException("inner rejected")
+            }
         }
         var pendingRoute: String? = null
         val inboundRecord: InboundRecord = try {
@@ -301,6 +357,7 @@ class ReceiptMessagingPeer(
                             kind = inner.kind,
                             text = null,
                             accepted = true,
+                            receiptTargetMessageId = (inner.body as InnerBody.Receipt).targetMessageId,
                         )
                     }
                     InnerKind.READ -> {
@@ -637,7 +694,17 @@ class ReceiptMessagingPeer(
         return store.commit {
             val current = if (isReceipt) receipt(messageId) else text(messageId)
             current ?: error("unknown outbox item")
-            val updated = current.copy(progress = current.progress.onRetryWait(retryAt, attempts))
+            // Mesh-1K-B: a flushOutbox retry submits a record that is already QUEUED (retry wait),
+            // not SENDING, and onRetryWait refuses QUEUED. Before this, every second non-accepted
+            // retry threw out of flushOutbox: the attempt was never counted and the remaining
+            // outbox items were skipped for that flush.
+            val progress = if (current.progress.attempt == AttemptState.QUEUED) {
+                check(current.progress.evidence == DeliveryEvidence.NONE) { "retry is for unaccepted work" }
+                current.progress.copy(retryAtEpochSeconds = retryAt, attemptCount = attempts)
+            } else {
+                current.progress.onRetryWait(retryAt, attempts)
+            }
+            val updated = current.copy(progress = progress)
             if (isReceipt) putReceipt(updated) else putText(updated)
             updated
         }
@@ -663,7 +730,21 @@ class ReceiptMessagingPeer(
 
     private suspend fun submit(env: ImmutableRelayEnvelope): RelaySubmitResult {
         submitInterceptor?.invoke(env)?.let { return it }
-        return peer.submitEnvelopeToPeer(env)
+        return try {
+            peer.submitEnvelopeToPeer(env)
+        } catch (e: java.io.IOException) {
+            // Mesh-1K-B: a relay transport failure (no route, DNS, timeout, reset) is OFFLINE, not a
+            // session failure. The committed envelope (same message id, same ciphertext) stays in the
+            // outbox, so a later retry is an Idempotency-Key replay of the identical bytes. An
+            // IOException after the body was written is AMBIGUOUS: the relay may already hold it.
+            // Cancellation is never mapped: a cancelled caller gets CancellationException.
+            currentCoroutineContext().ensureActive()
+            SafeLog.event(
+                "envelope_submit_offline",
+                "msg=${SafeLog.shortRef(env.messageId)} class=${OutboxPolicy.classifyTransportFailure(e)}",
+            )
+            RelaySubmitResult.Unavailable
+        }
     }
 
     private fun LocalMessagingStore.MutableStore.acceptSetupRoute(inner: InnerRecord): String {
@@ -742,7 +823,8 @@ class ReceiptMessagingPeer(
     ) {
         if (inner.kind != expected) throw MessagingProtocolException("receipt kind")
         val body = inner.body as? InnerBody.Receipt ?: throw MessagingProtocolException("receipt body")
-        val target = text(body.targetMessageId) ?: throw MessagingProtocolException("orphan receipt")
+        val target = text(body.targetMessageId) ?: verificationTargets[body.targetMessageId]
+            ?: throw MessagingProtocolException("orphan receipt")
         if (!target.kind.isUserMessage) throw MessagingProtocolException("receipt of receipt")
         if (target.sessionId != body.targetSessionId) throw MessagingProtocolException("wrong session")
         if (target.ciphertextSha256 != body.targetCiphertextSha256) {
@@ -770,6 +852,7 @@ class ReceiptMessagingPeer(
                 peerDeviceId = inner.senderDeviceId,
                 kind = expected,
                 accepted = true,
+                receiptTargetMessageId = if (expected == InnerKind.DELIVERY) body.targetMessageId else null,
             ),
         )
     }
@@ -783,7 +866,13 @@ class ReceiptMessagingPeer(
         unused(digest)
         if (inner.messageId != item.messageId) throw MessagingProtocolException("outer message id")
         if (inner.recipientMailbox != peer.ownMailboxId()) throw MessagingProtocolException("mailbox")
-        if (inner.expiresAt != item.expiresAt) throw MessagingProtocolException("expiry")
+        if (inner.expiresAt != item.expiresAt) throw UnauthenticatedOuterExpiry()
+        // Mesh-1K-AS: destination expiry check on the MLS-bound inner expiresAt (mesh path only; the relay
+        // path is bounded by the relay). Cleartext bundle/outer timestamps are never trusted for this.
+        // "expired" still records seen(accepted=false). Extending the outer header cannot skip it.
+        if (item.envelopeSha256 == "mesh" && !OutboxPolicy.stillLive(inner.expiresAt, nowSeconds())) {
+            throw MessagingProtocolException("expired")
+        }
         if (inner.sessionId != decrypted.sessionId) throw MessagingProtocolException("session")
         if (inner.epoch != decrypted.epoch) throw MessagingProtocolException("stale epoch")
         if (inner.recipientIdentityKey != peer.pin) throw MessagingProtocolException("recipient pin")
@@ -810,7 +899,8 @@ class ReceiptMessagingPeer(
 
     private fun previewReceipt(inner: InnerRecord) {
         val body = inner.body as? InnerBody.Receipt ?: throw MessagingProtocolException("receipt body")
-        val target = store.text(body.targetMessageId) ?: throw MessagingProtocolException("orphan receipt")
+        val target = store.text(body.targetMessageId) ?: verificationTargets[body.targetMessageId]
+            ?: throw MessagingProtocolException("orphan receipt")
         if (!target.kind.isUserMessage) throw MessagingProtocolException("receipt of receipt")
         if (target.sessionId != body.targetSessionId || inner.sessionId != target.sessionId) {
             throw MessagingProtocolException("wrong session")
@@ -842,6 +932,13 @@ class ReceiptMessagingPeer(
             ),
         )
     }
+
+    /**
+     * Cleartext outer expires_at does not match the decrypted inner expiresAt.
+     * Distinct from [MessagingProtocolException] so the seen-cache records authenticated
+     * failures ("expired", identity, malformed inner) and does not record this one.
+     */
+    private class UnauthenticatedOuterExpiry : Exception()
 
     private fun unused(value: Any?) = Unit
 }

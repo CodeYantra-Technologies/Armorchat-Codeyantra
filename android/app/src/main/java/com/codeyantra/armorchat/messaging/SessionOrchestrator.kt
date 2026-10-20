@@ -71,6 +71,15 @@ class SessionOrchestrator(
 
     fun link(peerPin: String): LiveLink? = links[peerPin]
 
+    /**
+     * Mesh-1K-R (read-only): the mailbox ids this phone receives on, over its live contact links (the
+     * invite placeholder link is excluded, as in [offerMesh]). An unauthenticated routing hint for the
+     * direct Mesh delivery path only; ReceiptMessagingPeer.bindInbound still checks the INNER mailbox.
+     * Caller holds the messaging mutex (same as every other [links] access during Mesh delivery).
+     */
+    fun localMailboxIds(): Set<String> =
+        links.entries.filter { it.key != INVITE_PEER }.mapNotNullTo(LinkedHashSet()) { it.value.peer.mailbox?.mailboxId }
+
     fun sessionView(selfPin: String, peerPin: String): SecureSessionView {
         val link = links[peerPin]
         val blocked = policy.blocksNetwork()
@@ -544,6 +553,11 @@ class SessionOrchestrator(
                     persistInbound(pin, record)
                 }
                 true
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                // Mesh-1F: restore under the caller's lock, then let cancellation propagate instead
+                // of reporting it as an ordinary decrypt failure.
+                if (snap != null) runCatching { link.peer.restore(snap) }
+                throw c
             } catch (_: Exception) {
                 if (snap != null) runCatching { link.peer.restore(snap) }
                 false
@@ -580,6 +594,29 @@ class SessionOrchestrator(
     fun status(peerPin: String, messageId: String): MessageStatus? {
         val link = links[peerPin] ?: return null
         return runCatching { link.receipts.status(messageId) }.getOrNull()
+    }
+
+    /**
+     * Mesh-1F: in-memory MLS state and receipt store of every live session, taken under the
+     * messaging mutex before a mesh offer so a failed durable commit can return memory to the
+     * state that is still on disk. Same snapshot bytes as [persist]; nothing is written anywhere.
+     */
+    class MeshCheckpoint internal constructor(
+        internal val entries: Map<String, Pair<ByteArray?, LocalMessagingStore.Snapshot>>,
+    )
+
+    fun meshCheckpoint(): MeshCheckpoint = MeshCheckpoint(
+        links.filterKeys { it != INVITE_PEER }.mapValues { (_, link) ->
+            runCatching { link.peer.snapshot() }.getOrNull() to link.receipts.store.snapshot()
+        },
+    )
+
+    fun restoreMeshCheckpoint(checkpoint: MeshCheckpoint) {
+        for ((pin, saved) in checkpoint.entries) {
+            val link = links[pin] ?: continue
+            saved.first?.let { runCatching { link.peer.restore(it) } }
+            link.receipts.store.restore(saved.second)
+        }
     }
 
     fun persist(peerPin: String): PersistedLink? {

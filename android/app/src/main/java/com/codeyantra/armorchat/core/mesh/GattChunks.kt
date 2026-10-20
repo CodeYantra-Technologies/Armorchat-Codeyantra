@@ -44,3 +44,18 @@ class GattReassembler {
         return bytes
     }
 }
+
+/**
+ * A chunk is sent only after the previous ack is success (0). A busy or
+ * failed code stops the sequence, so a later success does not skip the gap.
+ */
+object ChunkSendSequence {
+    fun acknowledgedCount(acks: List<Int>): Int {
+        var count = 0
+        for (code in acks) {
+            if (code != 0) return count
+            count += 1
+        }
+        return count
+    }
+}

@@ -26,7 +26,9 @@ import android.os.Build
 import android.os.ParcelUuid
 import com.codeyantra.armorchat.core.mesh.GattChunks
 import com.codeyantra.armorchat.core.mesh.GattReassembler
+import com.codeyantra.armorchat.core.mesh.MeshLinkPlanner
 import com.codeyantra.armorchat.core.mesh.MeshPolicy
+import com.codeyantra.armorchat.core.mesh.MeshRadioEvent
 import com.codeyantra.armorchat.messaging.SafeLog
 import java.net.ServerSocket
 import java.net.Socket
@@ -71,22 +73,42 @@ class NearbyMeshRadio(private val context: Context) {
     private var advertiseCallback: AdvertiseCallback? = null
     private var handler: (suspend (MeshPipe) -> Unit)? = null
     private val running = AtomicBoolean(false)
+
+    fun isRunning(): Boolean = running.get()
+    private var session = 0
+    private var onEvent: (MeshRadioEvent) -> Unit = {}
+    private var localNonce: ByteArray = ByteArray(4)
+    private var lastClientAttemptMs: Long = 0L
+    private val notifyAcks = java.util.concurrent.ConcurrentHashMap<String, CompletableDeferred<Int>>()
+    private val livePeers = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     var wifiDirectReady: Boolean = false
         private set
 
-    fun start(onPipe: suspend (MeshPipe) -> Unit): String {
+    fun start(
+        nonce: ByteArray,
+        onEvent: (MeshRadioEvent) -> Unit,
+        onPipe: suspend (MeshPipe) -> Unit,
+    ): String {
         stop()
+        this.onEvent = onEvent
+        val mine = session
+        localNonce = if (nonce.size == 4) nonce.copyOf() else ByteArray(4)
         handler = onPipe
         val manager = context.getSystemService(BluetoothManager::class.java)
         val adapter = manager?.adapter
         if (adapter == null || !adapter.isEnabled) {
+            emit(mine, MeshRadioEvent.RADIO_BLOCKED)
             return "Turn Bluetooth on. Saved messages stay on this phone until their deadline."
+        }
+        if (adapter.bluetoothLeAdvertiser == null && adapter.bluetoothLeScanner == null) {
+            emit(mine, MeshRadioEvent.RADIO_BLOCKED)
+            return "This phone cannot open Bluetooth. Saved messages stay on this phone until their deadline."
         }
         wifiDirectReady = context.getSystemService(WifiP2pManager::class.java) != null
         running.set(true)
-        openServer(manager)
-        startAdvertising(adapter)
-        startScan(adapter)
+        openServer(manager, mine)
+        startAdvertising(adapter, mine)
+        startScan(adapter, mine)
         return if (wifiDirectReady) {
             "Bluetooth is listening. A batch over 8 KB also tries Wi-Fi Direct, then falls back to Bluetooth."
         } else {
@@ -95,14 +117,40 @@ class NearbyMeshRadio(private val context: Context) {
     }
 
     fun stop() {
+        session += 1
         running.set(false)
         handler = null
+        onEvent = {}
+        livePeers.clear()
+        notifyAcks.values.forEach { it.complete(-7) }
+        notifyAcks.clear()
         val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter
         scanCallback?.let { runCatching { scanner?.stopScan(it) } }
         advertiseCallback?.let { runCatching { adapter?.bluetoothLeAdvertiser?.stopAdvertising(it) } }
         runCatching { server?.close() }
         server = null
         scanner = null
+        scanCallback = null
+        advertiseCallback = null
+        advertiserStarted = false
+        clients.values.forEach { runCatching { it.close() } }
+        clients.clear()
+        pipes.values.forEach { runCatching { it.close() } }
+        pipes.clear()
+    }
+
+    private fun emit(mine: Int, event: MeshRadioEvent) {
+        if (mine == session) onEvent(event)
+    }
+
+    private fun markLinkUp(mine: Int, address: String) {
+        livePeers.add(address)
+        emit(mine, MeshRadioEvent.LINK_UP)
+    }
+
+    private fun markLinkDown(mine: Int, address: String) {
+        livePeers.remove(address)
+        if (livePeers.isEmpty()) emit(mine, MeshRadioEvent.LINK_DOWN)
     }
 
     suspend fun wifiExchange(outgoing: ByteArray): ByteArray? = withContext(Dispatchers.IO) {
@@ -110,14 +158,18 @@ class NearbyMeshRadio(private val context: Context) {
         withTimeoutOrNull(8_000) { wifiRound(outgoing) }
     }
 
-    private fun openServer(manager: BluetoothManager) {
+    private fun openServer(manager: BluetoothManager, mine: Int) {
         val callback = object : BluetoothGattServerCallback() {
             override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
                 if (newState == BluetoothProfile.STATE_CONNECTED && running.get()) {
                     SafeLog.event("mesh_srv_conn", "state=connected status=$status")
+                    markLinkUp(mine, device.address)
                     val pipe = GattPipe(device.address, initiator = false, sender = { value ->
-                        val characteristic = server?.getService(serviceUuid)?.getCharacteristic(frameUuid) ?: return@GattPipe -2
-                        synchronized(notifyLock) {
+                        val ack = CompletableDeferred<Int>()
+                        notifyAcks.put(device.address, ack)?.complete(-5)
+                        val code = synchronized(notifyLock) {
+                            val characteristic = server?.getService(serviceUuid)?.getCharacteristic(frameUuid)
+                                ?: return@synchronized -2
                             if (Build.VERSION.SDK_INT >= 33) {
                                 server?.notifyCharacteristicChanged(device, characteristic, false, value) ?: -3
                             } else {
@@ -127,13 +179,22 @@ class NearbyMeshRadio(private val context: Context) {
                                 if (server?.notifyCharacteristicChanged(device, characteristic, false) == true) 0 else -1
                             }
                         }
+                        if (code != 0) {
+                            if (notifyAcks[device.address] === ack) notifyAcks.remove(device.address)
+                            return@GattPipe code
+                        }
+                        // Android delivers one notification at a time. The next chunk waits
+                        // for onNotificationSent so the ATT queue cannot return busy (201).
+                        withTimeoutOrNull(NOTIFY_ACK_TIMEOUT_MS) { ack.await() } ?: -6
                     }, mtu = { serverMtu[device.address] ?: GattChunks.DEFAULT_MTU })
                     pipes[device.address] = pipe
                     launch(pipe)
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                     SafeLog.event("mesh_srv_conn", "state=disconnected status=$status")
+                    notifyAcks.remove(device.address)?.complete(-4)
                     pipes.remove(device.address)
                     serverMtu.remove(device.address)
+                    markLinkDown(mine, device.address)
                 }
             }
 
@@ -144,6 +205,7 @@ class NearbyMeshRadio(private val context: Context) {
 
             override fun onNotificationSent(device: BluetoothDevice, status: Int) {
                 if (status != BluetoothGatt.GATT_SUCCESS) SafeLog.event("mesh_srv_notify_sent", "status=$status")
+                notifyAcks.remove(device.address)?.complete(status)
             }
 
             override fun onDescriptorWriteRequest(
@@ -213,7 +275,7 @@ class NearbyMeshRadio(private val context: Context) {
     private val clients = java.util.concurrent.ConcurrentHashMap<String, ClientPipe>()
     private val serverMtu = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
-    private fun startAdvertising(adapter: android.bluetooth.BluetoothAdapter) {
+    private fun startAdvertising(adapter: android.bluetooth.BluetoothAdapter, mine: Int) {
         val advertiser = adapter.bluetoothLeAdvertiser ?: return
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
@@ -222,16 +284,26 @@ class NearbyMeshRadio(private val context: Context) {
             .build()
         val data = AdvertiseData.Builder()
             .addServiceUuid(ParcelUuid(serviceUuid))
+            .addManufacturerData(MeshPolicy.ADVERT_COMPANY_ID, localNonce.copyOf())
             .setIncludeDeviceName(false)
             .setIncludeTxPowerLevel(false)
             .build()
-        val callback = object : AdvertiseCallback() {}
+        val callback = object : AdvertiseCallback() {
+            override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
+                SafeLog.event("mesh_adv", "ok")
+                emit(mine, MeshRadioEvent.RADIO_UP)
+            }
+
+            override fun onStartFailure(errorCode: Int) {
+                SafeLog.event("mesh_adv", "fail code=$errorCode")
+            }
+        }
         advertiseCallback = callback
         advertiser.startAdvertising(settings, data, callback)
         advertiserStarted = true
     }
 
-    private fun startScan(adapter: android.bluetooth.BluetoothAdapter) {
+    private fun startScan(adapter: android.bluetooth.BluetoothAdapter, mine: Int) {
         val scanner = adapter.bluetoothLeScanner ?: return
         this.scanner = scanner
         val filters = listOf(ScanFilter.Builder().setServiceUuid(ParcelUuid(serviceUuid)).build())
@@ -239,23 +311,33 @@ class NearbyMeshRadio(private val context: Context) {
         val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 if (!running.get()) return
-                connectAsClient(result.device)
+                val remote = result.scanRecord?.getManufacturerSpecificData(MeshPolicy.ADVERT_COMPANY_ID)
+                if (!MeshLinkPlanner.shouldConnect(localNonce, remote)) return
+                if (pipes.containsKey(result.device.address)) return
+                SafeLog.event("mesh_scan", "connect rssi=${result.rssi}")
+                connectAsClient(result.device, mine)
             }
         }
         scanCallback = callback
         scanner.startScan(filters, settings, callback)
+        emit(mine, MeshRadioEvent.RADIO_UP)
     }
 
-    private fun connectAsClient(device: BluetoothDevice) {
+    private fun connectAsClient(device: BluetoothDevice, mine: Int) {
         if (clients.isNotEmpty()) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastClientAttemptMs < CLIENT_COOLDOWN_MS) return
+        lastClientAttemptMs = now
+        emit(mine, MeshRadioEvent.DIALING)
         scope.launch {
-            val pipe = ClientPipe(device)
+            val pipe = ClientPipe(device, mine)
             clients[device.address] = pipe
             val opened = runCatching { withTimeout(12_000) { pipe.open() } }.getOrDefault(false)
             if (!opened) {
                 SafeLog.event("mesh_gatt", "open_fail")
                 pipe.close()
                 clients.remove(device.address)
+                markLinkDown(mine, device.address)
                 return@launch
             }
             SafeLog.event("mesh_gatt", "open_ok")
@@ -355,7 +437,7 @@ class NearbyMeshRadio(private val context: Context) {
     private inner class GattPipe(
         override val address: String,
         override val initiator: Boolean,
-        private val sender: (ByteArray) -> Int,
+        private val sender: suspend (ByteArray) -> Int,
         private val mtu: () -> Int,
     ) : MeshPipe, Addressable {
         private val incoming = Channel<ByteArray>(4)
@@ -376,7 +458,6 @@ class NearbyMeshRadio(private val context: Context) {
                     SafeLog.event("mesh_srv_notify_fail", "code=$code chunk=$index/${chunks.size} len=${chunk.size}")
                     error("mesh notify failed")
                 }
-                delay(20)
             }
         }
 
@@ -386,7 +467,10 @@ class NearbyMeshRadio(private val context: Context) {
         }
     }
 
-    private inner class ClientPipe(private val device: BluetoothDevice) : MeshPipe, Addressable {
+    private inner class ClientPipe(
+        private val device: BluetoothDevice,
+        private val mine: Int,
+    ) : MeshPipe, Addressable {
         override val initiator: Boolean = true
         override val address: String = device.address
         private val incoming = Channel<ByteArray>(4)
@@ -402,12 +486,14 @@ class NearbyMeshRadio(private val context: Context) {
                 override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
                     SafeLog.event("mesh_cli_conn", "state=$newState status=$status sdk=${Build.VERSION.SDK_INT}")
                     if (newState == BluetoothProfile.STATE_CONNECTED) {
+                        markLinkUp(mine, device.address)
                         val asked = gatt.requestMtu(REQUESTED_MTU)
                         SafeLog.event("mesh_cli_mtu_request", "mtu=$REQUESTED_MTU queued=$asked")
                         if (!asked) gatt.discoverServices()
                     } else {
                         writeAck?.complete(-4)
                         if (!ready.isCompleted) ready.complete(false)
+                        markLinkDown(mine, device.address)
                     }
                 }
 
@@ -540,6 +626,8 @@ class NearbyMeshRadio(private val context: Context) {
         const val BUSY_RETRIES = 5
         const val BUSY_BACKOFF_MS = 60L
         const val WRITE_ACK_TIMEOUT_MS = 5_000L
+        const val NOTIFY_ACK_TIMEOUT_MS = 5_000L
+        const val CLIENT_COOLDOWN_MS = 1_500L
     }
 }
 

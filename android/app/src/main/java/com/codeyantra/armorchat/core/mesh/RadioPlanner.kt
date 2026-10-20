@@ -39,3 +39,21 @@ object EncounterRole {
         return null
     }
 }
+
+/**
+ * One GATT connection per encounter. The higher nonce opens the client link.
+ * The other phone only accepts it. Equal nonces, or an advert with no nonce,
+ * skip the round so both sides can rotate later.
+ */
+object MeshLinkPlanner {
+    /** Flags (3) + 128-bit service UUID (18) + manufacturer nonce (8). */
+    const val LEGACY_ADVERT_BUDGET: Int = 31
+    const val LEGACY_ADVERT_OCTETS: Int = 3 + 18 + 8
+
+    fun advertFitsLegacy(): Boolean = LEGACY_ADVERT_OCTETS <= LEGACY_ADVERT_BUDGET
+
+    fun shouldConnect(localNonce: ByteArray, remoteNonce: ByteArray?): Boolean {
+        if (remoteNonce == null || remoteNonce.size != localNonce.size || localNonce.isEmpty()) return false
+        return EncounterRole.localInitiates(localNonce, remoteNonce) == true
+    }
+}

@@ -37,6 +37,8 @@ data class InboundRecord(
     val displayed: Boolean = false,
     val clientSequence: Long? = null,
     val replyTo: ReplyMetadata? = null,
+    /** Mesh-1K-O (P3): on a validated DELIVERY record only, the target outgoing message id. */
+    val receiptTargetMessageId: String? = null,
 )
 
 data class SeenEnvelope(

@@ -7,6 +7,7 @@ import com.codeyantra.armorchat.core.blob.LargeOutgoing
 import com.codeyantra.armorchat.core.blob.PublishResult
 import com.codeyantra.armorchat.core.common.AppClock
 import com.codeyantra.armorchat.core.mesh.EmergencyMeshEngine
+import com.codeyantra.armorchat.core.mesh.MeshDirect
 import com.codeyantra.armorchat.core.common.AppDispatchers
 import com.codeyantra.armorchat.core.database.dao.ContactSessionDao
 import com.codeyantra.armorchat.core.database.dao.ConversationDao
@@ -70,6 +71,8 @@ class ChatMessagingService @Inject constructor(
     private val pushTokenRegistrar: PushTokenRegistrar,
     private val notificationManager: com.codeyantra.armorchat.notification.ArmorChatNotificationManager,
     private val mesh: EmergencyMeshEngine,
+    // Mesh-1H-1: same singleton ArmorChatDatabase the DAOs above come from (DatabaseModule).
+    private val database: com.codeyantra.armorchat.core.database.ArmorChatDatabase,
 ) : ChatMessagingController {
     private val nowSeconds: () -> Long = { clock.nowEpochMs() / 1000 }
     private val orchestrator = SessionOrchestrator(
@@ -389,17 +392,22 @@ class ChatMessagingService @Inject constructor(
                 }
                 val createdAt = clock.nowEpochMs()
                 if (messageDao.findById(record.messageId) == null) {
+                    // Mesh-1K-O (P3): bind the row to the exact sealed ciphertext (existing v13 columns) so
+                    // a Mesh DELIVERY receipt can still be verified after a process restart.
                     messageDao.insert(
-                        MessageEntity(
-                            id = record.messageId,
-                            conversationId = conversationId,
-                            type = MessageType.TEXT.name,
-                            isOutgoing = true,
-                            localPlaintext = trimmed,
-                            ciphertext = record.ciphertextB64?.toByteArray(Charsets.UTF_8),
-                            status = record.progress.status.name,
-                            createdAtEpochMs = createdAt,
-                            replyToJson = replyTo?.toJson(),
+                        MeshReceiptAck.sendBinding(
+                            MessageEntity(
+                                id = record.messageId,
+                                conversationId = conversationId,
+                                type = MessageType.TEXT.name,
+                                isOutgoing = true,
+                                localPlaintext = trimmed,
+                                ciphertext = record.ciphertextB64?.toByteArray(Charsets.UTF_8),
+                                status = record.progress.status.name,
+                                createdAtEpochMs = createdAt,
+                                replyToJson = replyTo?.toJson(),
+                            ),
+                            record,
                         ),
                     )
                 } else {
@@ -412,23 +420,228 @@ class ChatMessagingService @Inject constructor(
         }
     }
 
-    suspend fun deliverMesh(payload: ByteArray): Boolean {
-        if (payload.isEmpty()) return false
-        val raw = runCatching { payload.toString(Charsets.UTF_8) }.getOrNull() ?: return false
-        if (!raw.startsWith("{")) return false
-        return orchestrator.offerMesh(raw) { peerPin, inbound ->
-            val contact = contactRepository.findByPublicKey(peerPin) ?: error("mesh contact missing")
-            val row = conversationDao.findByContactId(contact.id) ?: error("mesh conversation missing")
-            persistInbound(
-                com.codeyantra.armorchat.domain.model.Conversation(
-                    id = row.id,
-                    contactId = row.contactId,
-                    title = row.title,
-                    updatedAtEpochMs = row.updatedAtEpochMs,
-                ),
-                contact,
-                inbound,
+    suspend fun deliverMesh(payload: ByteArray): Boolean = deliverMeshResult(payload, localOnly = false).first
+
+    /**
+     * Mesh-1K-R (fix A): direct local delivery of a bundle custody refused as FULL (MeshCourier). The SAME
+     * path as [deliverMesh] (messaging mutex + 12 s bound, P1 pre-check, load, MLS decrypt with snapshot
+     * restore, bindInbound/previewReceipt/applyReceipt, one durable Room transaction, P3 validated release,
+     * P2 marker, receipt seal after commit) plus one extra in-lock filter: after load, the outer
+     * recipient_mailbox must be one of this phone's loaded mailboxes, else DECLINED before any decrypt.
+     * Nothing is held in custody for this payload, so nothing is dropped or evicted. Truthful outcome only.
+     */
+    suspend fun deliverMeshDirect(payload: ByteArray): MeshDirect {
+        val (ok, outcome) = deliverMeshResult(payload, localOnly = true)
+        return MeshDelivery.direct(ok, outcome)
+    }
+
+    /**
+     * Mesh-1K-R (fix A): lock-free pre-filter for MeshCourier (no MLS, no lock). Uses the mailbox ids last
+     * read under the messaging mutex; unknown (null, cold start) defers to the in-lock gate.
+     */
+    fun meshAddressedHere(payload: ByteArray): Boolean = MeshDelivery.addressedHere(payload, meshLocalMailboxes)
+
+    /** Mesh-1K-R: this phone's own mailbox ids as last read under [mutex] (null = not yet loaded). */
+    @Volatile
+    private var meshLocalMailboxes: Set<String>? = null
+
+    private suspend fun deliverMeshResult(payload: ByteArray, localOnly: Boolean): Pair<Boolean, MeshDelivery.Outcome?> {
+        // Mesh-1H-1: rows are only STAGED during offerMesh; commit writes inbox rows + the MLS
+        // session row in one Room transaction; notification/attachment run after commit, outside
+        // the mutex. Relay receive (syncContact -> persistInbound/persist) is unchanged.
+        // Mesh-1K-M: an envelope already in the durable inbox is DUPLICATE before any decrypt.
+        val staged = mutableListOf<MeshInboxCommit.Staged>()
+        var committed: List<MeshInboxCommit.Staged> = emptyList()
+        var commitOutcome = MeshDelivery.Outcome.DELIVERED
+        // Mesh-1K-N (P2): final outcome (from the report callback) drives the delivered-here marker.
+        var finalOutcome: MeshDelivery.Outcome? = null
+        // Mesh-1K-O (P3): validated DELIVERY receipts staged for the commit transaction, and those applied.
+        val releases = mutableListOf<MeshInboxCommit.Release>()
+        var applied: List<MeshInboxCommit.Release> = emptyList()
+        val ok = MeshDelivery.deliverDurable(
+            lock = mutex,
+            payload = payload,
+            durable = {
+                MeshDeliveredMarker.durable(payload, { messageDao.findById(it) }) { bytes, id ->
+                    mesh.hasDeliveredMarker(bytes, id)
+                }
+            },
+            committedAs = { commitOutcome },
+            report = { waitMs, processMs, outcome ->
+                finalOutcome = outcome
+                MeshTiming.mesh(waitMs, processMs, outcome)
+            },
+            load = {
+                val signer = runCatching { signer() }.getOrNull()
+                if (signer != null) {
+                    contactRepository.observeContacts().first().forEach { contact ->
+                        runCatching { loadIfNeeded(signer, contact) }
+                    }
+                }
+                // Mesh-1K-R: refresh the pre-filter's view (read-only, under the messaging mutex).
+                meshLocalMailboxes = runCatching { orchestrator.localMailboxIds() }.getOrNull()
+            },
+            addressed = if (!localOnly) {
+                null
+            } else {
+                {
+                    val mailbox = MeshDelivery.outerRecipientMailbox(payload)
+                    mailbox != null && mailbox in orchestrator.localMailboxIds()
+                }
+            },
+            checkpoint = {
+                staged.clear()
+                releases.clear()
+                orchestrator.meshCheckpoint()
+            },
+            rollback = {
+                staged.clear()
+                releases.clear()
+                orchestrator.restoreMeshCheckpoint(it)
+            },
+            offer = { raw, persist ->
+                // Mesh-1K-O (P3): verification-only targets for this phone's own held envelopes, for this
+                // one offer only (restart case); cleared before the lock is released.
+                val installed = installMeshAckTargets()
+                try {
+                    orchestrator.offerMesh(raw, persist)
+                } finally {
+                    installed.forEach { it.verificationTargets = emptyMap() }
+                }
+            },
+            persistInbound = { peerPin, inbound ->
+                val contact = contactRepository.findByPublicKey(peerPin) ?: error("mesh contact missing")
+                val row = conversationDao.findByContactId(contact.id) ?: error("mesh conversation missing")
+                if (inbound.kind == InnerKind.DELIVERY) {
+                    val target = inbound.receiptTargetMessageId?.let { orchestrator.link(peerPin)?.receipts?.store?.text(it) }
+                    MeshReceiptAck.stageRelease(peerPin, row.id, inbound, target, mesh.ownHeld(), clock.nowEpochMs())
+                        ?.let { releases += it }
+                }
+                stageMeshInbound(peerPin, row.id, row.title, contact, inbound)?.let { staged += it }
+            },
+            commit = { peerPin ->
+                val contact = contactRepository.findByPublicKey(peerPin) ?: error("mesh contact missing")
+                val session = sessionEntity(contact) // Keystore encryption before the transaction
+                val mine = releases.filter { it.peerPin == peerPin }
+                val result = if (mine.isEmpty()) {
+                    MeshInboxCommit(database).commit(staged.filter { it.peerPin == peerPin }, session)
+                } else {
+                    // Mesh-1K-O (P3): status DELIVERED + own custody delete + MLS session row: one transaction,
+                    // under the custody mutex so memory drops exactly what Room deleted.
+                    mesh.releaseOwnCustody {
+                        MeshInboxCommit(database).commit(staged.filter { it.peerPin == peerPin }, session, mine)
+                            .let { it to it.releasedCustodyIds }
+                    }
+                }
+                applied = result.released
+                if (result.existing > 0) {
+                    runCatching { SafeLog.event("mesh_inbox", "existing_rows=${result.existing}") }
+                }
+                if (result.conflicts > 0) {
+                    runCatching { SafeLog.event("mesh_inbox", "conflict_rows=${result.conflicts}") }
+                }
+                committed = result.inserted
+                commitOutcome = result.outcome()
+                if (session != null) runCatching { pushTokenRegistrar.onMailboxReady() }
+            },
+            afterCommit = {
+                // Mesh-1K-O (P3): receiver. Seal the existing DELIVERY receipt only now (inbox row + MLS
+                // durable), persist the advanced MLS state, then hold the sealed receipt in Mesh custody.
+                MeshReceiptAck.sealAfterCommit(
+                    targets = committed.map { it.peerPin to it.message.id },
+                    checkpoint = { orchestrator.meshCheckpoint() },
+                    rollback = { orchestrator.restoreMeshCheckpoint(it) },
+                    seal = { pin, id -> orchestrator.link(pin)?.receipts?.sealDeliveryReceipt(id) },
+                    persist = { pin -> persistSessionOrThrow(pin) },
+                    // Mesh-1K-R (D1): typed result; a "full" refusal keeps the identical bytes for a bounded
+                    // in-memory retry (emergency=false unchanged).
+                    admit = { bytes -> mesh.holdSealed(bytes, emergency = false, retryIfFull = true) },
+                    log = { detail -> runCatching { SafeLog.event("mesh_ack", detail) } },
+                )
+            },
+        )
+        // Mesh-1K-N (P2): marker only after the durable commit; a failed write changes nothing.
+        MeshDeliveredMarker.recordAfter(payload, ok, finalOutcome, committed, { messageDao.findById(it) }) { bytes, id, binding ->
+            mesh.recordDelivered(bytes, id, binding)
+        }
+        // Mesh-1K-O (P3): sender. Marker for the RECEIPT bundle once its release is durable.
+        MeshReceiptAck.recordReceiptMarker(payload, ok, finalOutcome, applied) { bytes, id, binding ->
+            mesh.recordDelivered(bytes, id, binding)
+        }
+        if (applied.isNotEmpty()) {
+            runCatching { SafeLog.event("mesh_ack", "receipt_applied=${applied.size}") }
+        }
+        if (ok) MeshInboxCommit.runAfterCommit(committed)
+        return ok to finalOutcome
+    }
+
+    /**
+     * Mesh-1K-O (P3): install MeshReceiptAck.durableTargets on the live links (caller holds [mutex]).
+     * Returns the receipt peers touched so the caller can clear them.
+     */
+    private suspend fun installMeshAckTargets(): List<ReceiptMessagingPeer> {
+        val own = mesh.ownHeld()
+        if (own.isEmpty()) return emptyList()
+        val byPin = MeshReceiptAck.durableTargets(own, { messageDao.findById(it) }) { conversationId ->
+            val conversation = conversationRepository.getConversation(conversationId) ?: return@durableTargets null
+            contactRepository.getContact(conversation.contactId)?.publicIdentityKey
+        }
+        val touched = mutableListOf<ReceiptMessagingPeer>()
+        for ((pin, targets) in byPin) {
+            val receipts = orchestrator.link(pin)?.receipts ?: continue
+            receipts.verificationTargets = targets
+            touched += receipts
+        }
+        return touched
+    }
+
+    /** Mesh-1K-O (P3): persist(contact) that fails loudly (no link, no row, or write failure). */
+    private suspend fun persistSessionOrThrow(peerPin: String) {
+        val contact = contactRepository.findByPublicKey(peerPin) ?: error("mesh contact missing")
+        val row = sessionEntity(contact) ?: error("mesh session missing")
+        sessionDao.upsert(row)
+    }
+
+    /**
+     * Mesh-1H-2: MeshCustodyRecovery's durable pre-check (MeshDelivery.alreadyStored): the held
+     * envelope's message id already has a messages row, so it must not be trial-decrypted again.
+     */
+    suspend fun meshMessageAlreadyStored(payload: ByteArray): Boolean =
+        MeshDelivery.alreadyStored(payload) { messageDao.findById(it) }
+
+    /** Mesh-1H-1: persistInbound's row + side effects, without writing anything. */
+    private fun stageMeshInbound(
+        peerPin: String,
+        conversationId: String,
+        conversationTitle: String?,
+        contact: Contact,
+        inbound: InboundRecord,
+    ): MeshInboxCommit.Staged? {
+        val nowMs = clock.nowEpochMs()
+        val entity = MeshInboxCommit.inboundRow(conversationId, inbound, nowMs) ?: return null
+        val meta = MeshInboxCommit.attachmentMeta(inbound)
+        val notifText = when {
+            meta == null -> inbound.text.orEmpty()
+            entity.type == MessageType.IMAGE.name -> "Photo"
+            entity.type == MessageType.VOICE.name -> "Voice message"
+            else -> meta.originalName.ifBlank { "Document" }
+        }
+        return MeshInboxCommit.Staged(peerPin, entity, conversationTitle) {
+            notificationManager.postMessageNotification(
+                conversationId = conversationId,
+                contactId = contact.id,
+                contactName = contact.displayName.ifBlank { contact.handle ?: "ArmorChat Contact" },
+                messageText = notifText,
+                messageId = inbound.messageId,
+                timestampEpochMs = nowMs,
             )
+            if (meta != null) {
+                val inline = meta.inlineCiphertext.isNotEmpty()
+                val smallMedia = meta.mediaClass != "document" && meta.sizeBytes <= 512 * 1024L
+                if (inline || smallMedia) {
+                    runCatching { materializeAttachment(meta) }
+                }
+            }
         }
     }
 
@@ -738,9 +951,9 @@ class ChatMessagingService @Inject constructor(
         if (!enabled) return
         largeBlobs.kick()
         withContext(dispatchers.io) {
-            mutex.withLock {
-                val contact = contactRepository.getContact(contactId) ?: return@withLock
-                val signer = runCatching { signer() }.getOrNull() ?: return@withLock
+            MeshTiming.timedLock(mutex, "relay_sync") {
+                val contact = contactRepository.getContact(contactId) ?: return@timedLock
+                val signer = runCatching { signer() }.getOrNull() ?: return@timedLock
                 loadInviteIfNeeded(signer)
                 runCatching { orchestrator.ensureInviteMlsReady() }
                 loadIfNeeded(signer, contact)
@@ -748,7 +961,7 @@ class ChatMessagingService @Inject constructor(
                 if (current == null || !current.peer.groupCreated) {
                     orchestrator.tryAdoptInvite(contact.publicIdentityKey)
                 }
-                if (policy.blocksNetwork()) return@withLock
+                if (policy.blocksNetwork()) return@timedLock
                 val conversation = conversationRepository.getOrCreateForContact(contact)
                 orchestrator.sync(contact.publicIdentityKey) { inbound ->
                     persistInbound(conversation, contact, inbound)
@@ -798,8 +1011,10 @@ class ChatMessagingService @Inject constructor(
                 val link = orchestrator.link(contact.publicIdentityKey) ?: return@withLock
                 val row = messageDao.findById(messageId)
                 val route = link.peer.peerRoute
+                // Mesh-1K-O (P3): outgoing rows now carry receipt* columns too; never treat one as inbound.
                 if (link.receipts.inbound(messageId) == null &&
-                    row?.receiptSessionId != null &&
+                    row != null && !row.isOutgoing &&
+                    row.receiptSessionId != null &&
                     row.receiptCiphertextSha256 != null &&
                     row.receiptEpoch != null
                 ) {
@@ -1093,34 +1308,38 @@ class ChatMessagingService @Inject constructor(
     }
 
     private suspend fun persist(contact: Contact) {
+        val row = sessionEntity(contact) ?: return
+        sessionDao.upsert(row)
+        pushTokenRegistrar.onMailboxReady()
+    }
+
+    /** persist(contact)'s row, Keystore encryption included; writes nothing (Mesh-1H-1 split). */
+    private fun sessionEntity(contact: Contact): ContactSessionEntity? {
         contactPins[contact.id] = contact.publicIdentityKey
-        val saved = orchestrator.persist(contact.publicIdentityKey) ?: return
+        val saved = orchestrator.persist(contact.publicIdentityKey) ?: return null
         val encryptedOwnerToken = saved.mailbox?.ownerToken?.let { token ->
             runCatching { relayKek.encrypt(token.toByteArray(Charsets.UTF_8)) }.getOrNull()
         }
         val encryptedSubmitCapability = saved.mailbox?.submitCapability?.let { cap ->
             runCatching { relayKek.encrypt(cap.toByteArray(Charsets.UTF_8)) }.getOrNull()
         }
-        sessionDao.upsert(
-            ContactSessionEntity(
-                contactId = contact.id,
-                peerPin = saved.peerPin,
-                relayOrigin = saved.relayOrigin,
-                mailboxId = saved.mailbox?.mailboxId,
-                encryptedOwnerToken = encryptedOwnerToken,
-                encryptedSubmitCapability = encryptedSubmitCapability,
-                deviceId = saved.deviceId,
-                binding = saved.binding,
-                localRouteQr = saved.localRouteQr,
-                peerRouteQr = saved.peerRouteQr,
-                mlsSnapshot = saved.mlsSnapshot,
-                groupCreated = saved.groupCreated,
-                state = saved.state.name,
-                updatedAtEpochMs = clock.nowEpochMs(),
-                mlsSessionId = saved.sessionId,
-            ),
+        return ContactSessionEntity(
+            contactId = contact.id,
+            peerPin = saved.peerPin,
+            relayOrigin = saved.relayOrigin,
+            mailboxId = saved.mailbox?.mailboxId,
+            encryptedOwnerToken = encryptedOwnerToken,
+            encryptedSubmitCapability = encryptedSubmitCapability,
+            deviceId = saved.deviceId,
+            binding = saved.binding,
+            localRouteQr = saved.localRouteQr,
+            peerRouteQr = saved.peerRouteQr,
+            mlsSnapshot = saved.mlsSnapshot,
+            groupCreated = saved.groupCreated,
+            state = saved.state.name,
+            updatedAtEpochMs = clock.nowEpochMs(),
+            mlsSessionId = saved.sessionId,
         )
-        pushTokenRegistrar.onMailboxReady()
     }
 
     private suspend fun signer(): IdentitySigner {

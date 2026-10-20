@@ -1,13 +1,15 @@
 package com.codeyantra.armorchat.core.mesh
 
 sealed interface AdmitResult {
-    data class Held(val bundle: CustodyBundle) : AdmitResult
+    /** [evicted]: the row removed to make room (Mesh-1D-C, so the caller can delete it from Room). */
+    data class Held(val bundle: CustodyBundle, val evicted: CustodyBundle? = null) : AdmitResult
     data class Duplicate(val bundle: CustodyBundle) : AdmitResult
     data class Rejected(val reason: String) : AdmitResult
 }
 
 sealed interface AcceptResult {
-    data class Stored(val bundle: CustodyBundle) : AcceptResult
+    /** [evicted]: the row removed to make room (Mesh-1D-C, so the caller can delete it from Room). */
+    data class Stored(val bundle: CustodyBundle, val evicted: CustodyBundle? = null) : AcceptResult
     data class Duplicate(val bundle: CustodyBundle) : AcceptResult
     data class Rejected(val reason: String) : AcceptResult
 }
@@ -40,8 +42,8 @@ class CustodyLedger(
                 return AdmitResult.Duplicate(existing)
             }
         }
-        evictIfFull(emergency)
-        if (rows.size >= MeshPolicy.MAX_BUNDLES) return AdmitResult.Rejected("full")
+        // Mesh-1K-AS: own pool (hopCount 0) is reserved; foreign rows never consume it. Refuse, never evict.
+        if (ownCount() >= MeshPolicy.OWN_MAX) return AdmitResult.Rejected("full")
         val bundle = CustodyBundle(
             id = id,
             createdAtMs = nowMs,
@@ -69,8 +71,8 @@ class CustodyLedger(
             if (existing.expireAtMs != bundle.expireAtMs) return AcceptResult.Rejected("ttl")
             return AcceptResult.Duplicate(existing)
         }
-        evictIfFull(bundle.emergency)
-        if (rows.size >= MeshPolicy.MAX_BUNDLES) return AcceptResult.Rejected("full")
+        // Mesh-1K-AS: foreign pool cap; the (untrusted) emergency bit plays no part. Refuse, never evict.
+        if (foreignCount() >= MeshPolicy.FOREIGN_MAX) return AcceptResult.Rejected("full")
         val stored = bundle.copy(hopCount = bundle.hopCount + 1)
         rows[stored.idHex] = stored
         return AcceptResult.Stored(stored)
@@ -87,7 +89,8 @@ class CustodyLedger(
         return rows.values
             .asSequence()
             .filter { it.live(nowMs) && it.idHex !in remoteIds }
-            .sortedWith(compareBy({ !it.emergency }, { it.expireAtMs }, { it.idHex }))
+            // Mesh-1K-AS: emergency orders only this phone's OWN rows; foreign rows by deadline only.
+            .sortedWith(compareBy({ !(it.emergency && it.hopCount == 0) }, { it.expireAtMs }, { it.idHex }))
             .take(MeshPolicy.MAX_OFFERS_PER_ENCOUNTER)
             .toList()
     }
@@ -104,14 +107,10 @@ class CustodyLedger(
     fun soonestExpireAt(nowMs: Long): Long? =
         rows.values.filter { it.live(nowMs) }.minOfOrNull { it.expireAtMs }
 
-    private fun evictIfFull(incomingEmergency: Boolean) {
-        if (rows.size < MeshPolicy.MAX_BUNDLES) return
-        val victim = rows.values
-            .sortedWith(compareBy({ it.emergency }, { it.expireAtMs }))
-            .firstOrNull()
-            ?: return
-        if (victim.emergency && incomingEmergency) return
-        if (victim.emergency && !incomingEmergency) return
-        rows.remove(victim.idHex)
-    }
+    fun contains(idHex: String): Boolean = rows.containsKey(idHex)
+
+    /** Mesh-1K-AS: pool membership is derived from the stored hopCount (legacy rows included). */
+    fun ownCount(): Int = rows.values.count { it.hopCount == 0 }
+
+    fun foreignCount(): Int = rows.values.count { it.hopCount >= 1 }
 }

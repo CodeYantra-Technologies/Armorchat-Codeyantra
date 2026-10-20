@@ -29,6 +29,25 @@ object OutboxPolicy {
         return nowEpochSeconds + wait
     }
 
+    /**
+     * Mesh-1K-B: why a relay submit threw. Both map to [RelaySubmitResult.Unavailable] (OFFLINE,
+     * no attempt burned); the split only records whether the relay might already hold the envelope.
+     * NOT_SENT: the connection or TLS session never existed, so no request body reached the relay.
+     * AMBIGUOUS: anything else (read/call timeout, reset, EOF after write). A retry is still safe
+     * because it resubmits the identical envelope under the same Idempotency-Key.
+     */
+    enum class TransportFailure { NOT_SENT, AMBIGUOUS }
+
+    fun classifyTransportFailure(e: java.io.IOException): TransportFailure = when (e) {
+        is java.net.UnknownHostException,
+        is java.net.ConnectException,
+        is java.net.NoRouteToHostException,
+        is java.net.PortUnreachableException,
+        is javax.net.ssl.SSLHandshakeException,
+        -> TransportFailure.NOT_SENT
+        else -> TransportFailure.AMBIGUOUS
+    }
+
     fun burnsAttempt(outcome: SubmitOutcome): Boolean = when (outcome) {
         SubmitOutcome.OFFLINE, SubmitOutcome.SUSPENDED -> false
         SubmitOutcome.ACCEPTED, SubmitOutcome.RETRYABLE, SubmitOutcome.PERMANENT -> true

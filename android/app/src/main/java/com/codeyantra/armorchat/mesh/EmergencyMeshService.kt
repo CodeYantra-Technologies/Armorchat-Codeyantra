@@ -5,8 +5,11 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.bluetooth.BluetoothAdapter
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
@@ -16,11 +19,17 @@ import com.codeyantra.armorchat.R
 import com.codeyantra.armorchat.core.mesh.BundleCodec
 import com.codeyantra.armorchat.core.mesh.BundleDecode
 import com.codeyantra.armorchat.core.mesh.EmergencyMeshEngine
+import com.codeyantra.armorchat.core.mesh.MeshAdapterRecovery
 import com.codeyantra.armorchat.core.mesh.MeshConversation
+import com.codeyantra.armorchat.core.mesh.MeshCourier
+import com.codeyantra.armorchat.core.mesh.MeshCustodyRecovery
 import com.codeyantra.armorchat.core.mesh.MeshFrames
+import com.codeyantra.armorchat.core.mesh.MeshRadioEvent
 import com.codeyantra.armorchat.core.mesh.RadioPath
 import com.codeyantra.armorchat.core.mesh.RadioPlanner
+import com.codeyantra.armorchat.domain.model.EmergencyMeshStatus
 import com.codeyantra.armorchat.messaging.ChatMessagingService
+import com.codeyantra.armorchat.messaging.SafeLog
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
@@ -38,46 +47,152 @@ class EmergencyMeshService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val radio by lazy { NearbyMeshRadio(this) }
+    private var sweepStarted = false
+    private var recoveryStarted = false
+
+    /**
+     * Mesh-1H-2: bounded single-flight re-offer of held custody rows (see MeshCustodyRecovery).
+     * Same deliverMesh / dropDelivered as [ingest]; never runs while an encounter is active.
+     */
+    private val recovery by lazy {
+        MeshCustodyRecovery(
+            scope = scope,
+            candidates = { engine.recoveryCandidates() },
+            alreadyStored = { payload -> messaging.meshMessageAlreadyStored(payload) },
+            deliver = { payload -> messaging.deliverMesh(payload) },
+            dropDelivered = { idHex -> engine.dropDelivered(idHex) },
+        )
+    }
+    private var receiverRegistered = false
+
+    private val adapterReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+            val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+            when (MeshAdapterRecovery.action(engine.armed, permissionsGranted(), state, radio.isRunning())) {
+                MeshAdapterRecovery.Action.IGNORE -> Unit
+                MeshAdapterRecovery.Action.RELEASE -> releaseRadio()
+                MeshAdapterRecovery.Action.RESTART -> {
+                    engine.onRadioEvent(MeshRadioEvent.RECOVERING)
+                    openRadio()
+                }
+            }
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(adapterReceiver, filter, Context.RECEIVER_EXPORTED)
+        } else {
+            registerReceiver(adapterReceiver, filter)
+        }
+        receiverRegistered = true
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startInForeground("Emergency mesh is listening")
-        if (MeshPermissions.missing(this).isNotEmpty()) {
+        startInForeground(foregroundText())
+        if (!permissionsGranted()) {
             engine.setRadioDetail("Allow nearby-device access, then turn Emergency Mesh on again.")
+            engine.onRadioEvent(MeshRadioEvent.RADIO_BLOCKED)
             stopSelf()
             return START_NOT_STICKY
         }
-        val detail = try {
-            radio.start { pipe -> encounter(pipe) }
-        } catch (_: SecurityException) {
-            "Nearby permission is missing. Sealed messages stay saved until their deadline."
+        if (!radio.isRunning()) {
+            engine.onRadioEvent(MeshRadioEvent.RECOVERING)
+            openRadio()
         }
-        engine.setRadioDetail(detail)
-        scope.launch {
-            while (isActive) {
-                engine.sweep()
-                val holding = engine.state.value.holding
-                val soonest = engine.state.value.soonestExpireAtMs
-                val text = if (holding == 0 || soonest == null) {
-                    "Listening. Nothing is waiting on this phone."
-                } else {
-                    "Holding $holding sealed message(s). Oldest deadline ${formatRemaining(soonest)}."
+        if (!sweepStarted) {
+            sweepStarted = true
+            scope.launch {
+                while (isActive) {
+                    engine.sweep()
+                    startInForeground(foregroundText())
+                    delay(30_000)
                 }
-                startInForeground(text)
-                delay(30_000)
             }
+        }
+        if (!recoveryStarted) {
+            recoveryStarted = true
+            // StateFlow replays the current count, so a restore() that finished before this
+            // service started is covered too.
+            scope.launch { engine.restores.collect { recovery.request() } }
         }
         return START_STICKY
     }
 
     override fun onDestroy() {
+        if (receiverRegistered) {
+            receiverRegistered = false
+            runCatching { unregisterReceiver(adapterReceiver) }
+        }
         radio.stop()
+        if (engine.armed) {
+            engine.onRadioEvent(MeshRadioEvent.RADIO_BLOCKED)
+        } else {
+            engine.onRadioEvent(MeshRadioEvent.LINK_DOWN)
+        }
         scope.cancel()
         super.onDestroy()
     }
 
+    private fun permissionsGranted(): Boolean = MeshPermissions.missing(this).isEmpty()
+
+    private fun releaseRadio() {
+        radio.stop()
+        engine.setRadioDetail("Turn Bluetooth on. Saved messages stay on this phone until their deadline.")
+        engine.onRadioEvent(MeshRadioEvent.RADIO_BLOCKED)
+    }
+
+    private fun openRadio() {
+        if (!engine.armed) return
+        if (!permissionsGranted()) {
+            releaseRadio()
+            return
+        }
+        val detail = try {
+            radio.start(engine.localNonce(), engine::onRadioEvent) { pipe -> encounter(pipe) }
+        } catch (_: SecurityException) {
+            radio.stop()
+            engine.onRadioEvent(MeshRadioEvent.RADIO_BLOCKED)
+            "Nearby permission is missing. Sealed messages stay saved until their deadline."
+        }
+        engine.setRadioDetail(detail)
+    }
+
+    private fun foregroundText(): String {
+        val runtime = engine.state.value
+        return when (runtime.status) {
+            EmergencyMeshStatus.UNAVAILABLE ->
+                "Bluetooth is off or nearby-device access is missing."
+            EmergencyMeshStatus.SEARCHING ->
+                "Searching. Bluetooth is starting."
+            EmergencyMeshStatus.STANDBY ->
+                "Emergency mesh is off."
+            else -> {
+                val soonest = runtime.soonestExpireAtMs
+                if (runtime.holding == 0 || soonest == null) {
+                    "Listening. Nothing is waiting on this phone."
+                } else {
+                    "Holding ${runtime.holding} sealed message(s). Oldest deadline ${formatRemaining(soonest)}."
+                }
+            }
+        }
+    }
+
     private suspend fun encounter(pipe: MeshPipe) {
+        recovery.encounterStarted()
+        try {
+            exchange(pipe)
+        } finally {
+            recovery.encounterEnded()
+        }
+    }
+
+    private suspend fun exchange(pipe: MeshPipe) {
         val localPhase = MeshFrames.encodePhase(engine.phaseFor(emptySet(), radio.wifiDirectReady))
         var sentIds: List<ByteArray> = emptyList()
         val (_, remoteBundles) = MeshConversation.run(
@@ -101,9 +216,14 @@ class EmergencyMeshService : Service() {
                     bothWifiDirect = parsed.beacon.wifiDirect && radio.wifiDirectReady,
                 )
                 if (agreed == RadioPath.WIFI_DIRECT) {
+                    recovery.encounterStarted()
                     scope.launch {
-                        val carried = radio.wifiExchange(blob)
-                        if (carried != null) ingest(carried, RadioPath.WIFI_DIRECT)
+                        try {
+                            val carried = radio.wifiExchange(blob)
+                            if (carried != null) ingest(carried, RadioPath.WIFI_DIRECT)
+                        } finally {
+                            recovery.encounterEnded()
+                        }
                     }
                 }
                 blob
@@ -115,13 +235,24 @@ class EmergencyMeshService : Service() {
     }
 
     private suspend fun ingest(bytes: ByteArray, path: RadioPath) {
-        for (encoded in MeshFrames.decodeBundles(bytes)) {
-            val decoded = BundleCodec.decode(encoded) as? BundleDecode.Ok ?: continue
-            engine.ingest(encoded, path)
-            if (messaging.deliverMesh(decoded.bundle.payload)) {
-                engine.dropDelivered(decoded.bundle.idHex)
-            }
-        }
+        MeshCourier.ingest(
+            bytes = bytes,
+            path = path,
+            store = { encoded, via -> engine.ingest(encoded, via) },
+            deliver = { payload ->
+                // Mesh-1H-2: a false here (LOCK_TIMEOUT, failed commit, not for us) leaves the row
+                // held; ask for a bounded recovery pass, deferred until the encounter ends.
+                messaging.deliverMesh(payload).also { if (!it) recovery.request() }
+            },
+            dropDelivered = { idHex -> engine.dropDelivered(idHex) },
+            // Mesh-1K-R (fix A): custody FULL + outer mailbox is ours -> bounded slot-less delivery through
+            // the same authenticated deliverMesh path. Nothing held, so no recovery request and no drop.
+            addressedHere = { payload -> messaging.meshAddressedHere(payload) },
+            deliverDirect = { payload -> messaging.deliverMeshDirect(payload) },
+            reportDirect = { counts ->
+                SafeLog.event("mesh_direct", counts.entries.joinToString(" ") { "${it.key.name.lowercase()}=${it.value}" })
+            },
+        )
     }
 
     private fun startInForeground(text: String) {

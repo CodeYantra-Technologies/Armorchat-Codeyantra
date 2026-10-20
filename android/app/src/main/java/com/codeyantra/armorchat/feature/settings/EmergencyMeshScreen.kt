@@ -56,6 +56,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.codeyantra.armorchat.R
+import com.codeyantra.armorchat.domain.model.EmergencyMeshStatus
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -160,7 +161,7 @@ fun EmergencyMeshScreen(
                             shape = RoundedCornerShape(12.dp),
                         ) {
                             Text(
-                                text = runtime.status.description,
+                                text = runtime.status.displayTitle,
                                 style = MaterialTheme.typography.labelMedium,
                                 color = colors.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
@@ -289,7 +290,8 @@ fun EmergencyMeshScreen(
                             title = "Nearby ArmorChat device",
                             subtitle = "Bluetooth, or Wi-Fi Direct for a large batch",
                             icon = Icons.Outlined.Hub,
-                            active = runtime.armed,
+                            active = runtime.status == EmergencyMeshStatus.CONNECTING ||
+                                runtime.status == EmergencyMeshStatus.CONNECTED,
                         )
 
                         Icon(

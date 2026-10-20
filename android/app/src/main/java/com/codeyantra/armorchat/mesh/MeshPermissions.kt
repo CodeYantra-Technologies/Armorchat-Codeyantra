@@ -7,9 +7,11 @@ import android.os.Build
 import androidx.core.content.ContextCompat
 
 object MeshPermissions {
-    fun required(): Array<String> {
+    fun required(): Array<String> = required(Build.VERSION.SDK_INT)
+
+    fun required(sdk: Int): Array<String> {
         val names = mutableListOf<String>()
-        if (Build.VERSION.SDK_INT >= 31) {
+        if (sdk >= 31) {
             names += Manifest.permission.BLUETOOTH_SCAN
             names += Manifest.permission.BLUETOOTH_ADVERTISE
             names += Manifest.permission.BLUETOOTH_CONNECT
@@ -18,7 +20,7 @@ object MeshPermissions {
             names += Manifest.permission.BLUETOOTH_ADMIN
             names += Manifest.permission.ACCESS_FINE_LOCATION
         }
-        if (Build.VERSION.SDK_INT >= 33) {
+        if (sdk >= 33) {
             names += Manifest.permission.NEARBY_WIFI_DEVICES
             names += Manifest.permission.POST_NOTIFICATIONS
         } else {
