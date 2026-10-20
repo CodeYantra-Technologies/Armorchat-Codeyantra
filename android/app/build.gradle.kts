@@ -20,6 +20,31 @@ val releaseKeystoreProperties = Properties().apply {
 }
 val hasReleaseSigning = releaseKeystoreProperties.getProperty("storeFile") != null
 
+// Debug signing is pinned explicitly (fail-closed). Never rely on AGP's default
+// ~/.android or $XDG_CONFIG_HOME/.android lookup: two different debug keys exist
+// on dev machines and a wrong signer cannot update an installed debug app.
+// Configure `armorchat.debugKeystore=/abs/path/debug.keystore` in android/local.properties
+// (gitignored), or via -Parmorchat.debugKeystore=... / env ARMORCHAT_DEBUG_KEYSTORE.
+// Optional: armorchat.debugStorePassword / debugKeyAlias / debugKeyPassword
+// (default to the public Android debug values).
+val localProperties = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+fun debugSigningProp(name: String): String? =
+    (findProperty(name) as String?)
+        ?: System.getenv(name.replace('.', '_').replace(Regex("([a-z])([A-Z])"), "$1_$2").uppercase())
+        ?: localProperties.getProperty(name)
+val debugKeystorePath: String? = debugSigningProp("armorchat.debugKeystore")?.trim()?.takeIf { it.isNotEmpty() }
+val debugKeystoreFile: File? = debugKeystorePath?.let { file(it) }
+val debugKeystoreError: String? = when {
+    debugKeystoreFile == null ->
+        "armorchat.debugKeystore is not set. Add it to android/local.properties (see app/build.gradle.kts)."
+    !debugKeystoreFile.isFile -> "Debug keystore not found: $debugKeystoreFile"
+    !debugKeystoreFile.canRead() -> "Debug keystore not readable: $debugKeystoreFile"
+    else -> null
+}
+
 android {
     namespace = "com.codeyantra.armorchat"
     compileSdk = 36
@@ -42,6 +67,14 @@ android {
     }
 
     signingConfigs {
+        getByName("debug") {
+            // On error point at a sentinel path (never the default location) and fail below.
+            storeFile = debugKeystoreFile?.takeIf { debugKeystoreError == null }
+                ?: rootProject.file("build/armorchat-debug-keystore-NOT-CONFIGURED")
+            storePassword = debugSigningProp("armorchat.debugStorePassword") ?: "android"
+            keyAlias = debugSigningProp("armorchat.debugKeyAlias") ?: "androiddebugkey"
+            keyPassword = debugSigningProp("armorchat.debugKeyPassword") ?: "android"
+        }
         if (hasReleaseSigning) {
             create("release") {
                 storeFile = rootProject.file(releaseKeystoreProperties.getProperty("storeFile"))
@@ -67,6 +100,7 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
+            signingConfig = signingConfigs.getByName("debug")
             buildConfigField("boolean", "TWO_PHONE_TEST", "true")
         }
     }
@@ -160,6 +194,7 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.truth)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.androidx.compose.ui.test.junit4)
 }
 
 // Host JNI feasibility tests use the same Rust source, compiled for the host JVM.
@@ -183,5 +218,13 @@ tasks.withType<Test>().configureEach {
     }
     if (paths.isNotEmpty()) {
         systemProperty("java.library.path", paths.joinToString(System.getProperty("path.separator")))
+    }
+}
+
+// Fail closed: any task that needs the debug signing config aborts with a clear error.
+if (debugKeystoreError != null) {
+    tasks.matching { it.name == "validateSigningDebug" || it.name == "validateSigningDebugAndroidTest" ||
+        (it.name.startsWith("package") && it.name.contains("Debug")) }.configureEach {
+        doFirst { throw GradleException("ArmorChat debug signing: $debugKeystoreError") }
     }
 }
