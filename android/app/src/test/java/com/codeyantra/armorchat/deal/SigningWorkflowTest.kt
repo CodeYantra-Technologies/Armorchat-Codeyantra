@@ -574,7 +574,7 @@ class SigningJournalRecoveryTest {
         val context = RuntimeEnvironment.getApplication()
         val database = Room.inMemoryDatabaseBuilder(context, DealDatabase::class.java).allowMainThreadQueries().build()
         try {
-            assertEquals(3, database.openHelper.readableDatabase.version)
+            assertEquals(4, database.openHelper.readableDatabase.version)
             val fixture = SigningFixture()
             val dao = database.dealDao()
             val store = SigningProgressStore(dao)

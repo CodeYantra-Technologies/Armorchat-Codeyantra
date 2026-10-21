@@ -13,6 +13,9 @@ package com.codeyantra.armorchat.deal.domain
  *
  * DRAFT → PROPOSED → NEGOTIATING → PARTIALLY_SIGNED → FULLY_SIGNED.
  * Optional after finalization: FULLY_SIGNED → BACKUP_PENDING → EXECUTED.
+ * Mutual closure: one of those three statuses → CLOSED, and only when both
+ * closure confirmations verify. One confirmation does not change the status.
+ * CLOSED cannot move backward.
  *
  * The mandatory signing path for a bound agreement is [SigningWorkflow]. It
  * uses these same statuses. It does not replace this table.
@@ -25,6 +28,7 @@ enum class DealStatus {
     FULLY_SIGNED,
     BACKUP_PENDING,
     EXECUTED,
+    CLOSED,
     REJECTED,
     CANCELLED,
     EXPIRED,
@@ -37,6 +41,7 @@ enum class DealEvent {
     FULL_SIGN,
     MARK_BACKUP_PENDING,
     EXECUTE,
+    CLOSE,
     REJECT,
     CANCEL,
     EXPIRE,
@@ -74,9 +79,14 @@ object DealLifecycle {
         ),
         DealStatus.FULLY_SIGNED to mapOf(
             DealEvent.MARK_BACKUP_PENDING to DealStatus.BACKUP_PENDING,
+            DealEvent.CLOSE to DealStatus.CLOSED,
         ),
         DealStatus.BACKUP_PENDING to mapOf(
             DealEvent.EXECUTE to DealStatus.EXECUTED,
+            DealEvent.CLOSE to DealStatus.CLOSED,
+        ),
+        DealStatus.EXECUTED to mapOf(
+            DealEvent.CLOSE to DealStatus.CLOSED,
         ),
     )
 
@@ -90,6 +100,7 @@ object DealLifecycle {
         DealStatus.FULLY_SIGNED,
         DealStatus.BACKUP_PENDING,
         DealStatus.EXECUTED,
+        DealStatus.CLOSED,
         -> true
         else -> false
     }
@@ -106,9 +117,12 @@ object DealLifecycle {
     fun allowsFinalizedStatus(from: DealStatus, to: DealStatus): Boolean {
         if (!claimsFinality(from)) return true
         return when (from) {
-            DealStatus.FULLY_SIGNED -> to == DealStatus.FULLY_SIGNED || to == DealStatus.BACKUP_PENDING
-            DealStatus.BACKUP_PENDING -> to == DealStatus.BACKUP_PENDING || to == DealStatus.EXECUTED
-            DealStatus.EXECUTED -> to == DealStatus.EXECUTED
+            DealStatus.FULLY_SIGNED ->
+                to == DealStatus.FULLY_SIGNED || to == DealStatus.BACKUP_PENDING || to == DealStatus.CLOSED
+            DealStatus.BACKUP_PENDING ->
+                to == DealStatus.BACKUP_PENDING || to == DealStatus.EXECUTED || to == DealStatus.CLOSED
+            DealStatus.EXECUTED -> to == DealStatus.EXECUTED || to == DealStatus.CLOSED
+            DealStatus.CLOSED -> to == DealStatus.CLOSED
             else -> false
         }
     }

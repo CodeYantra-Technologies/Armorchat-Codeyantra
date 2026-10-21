@@ -129,6 +129,18 @@ interface DealDao {
     @Query("SELECT COUNT(*) FROM deal_transport")
     fun transportCount(): Int
 
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    fun insertClosure(row: DealClosureRow)
+
+    @Query(
+        "SELECT * FROM deal_closures WHERE dealId = :dealId AND versionId = :versionId " +
+            "AND partyId = :partyId AND kind = :kind",
+    )
+    fun findClosure(dealId: String, versionId: String, partyId: String, kind: String): DealClosureRow?
+
+    @Query("SELECT * FROM deal_closures WHERE dealId = :dealId AND versionId = :versionId")
+    fun closures(dealId: String, versionId: String): List<DealClosureRow>
+
     @Query(
         "UPDATE deal_drafts SET sealedPayload = :sealedPayload, sealedPartyASigning = :sealedPartyASigning, " +
             "sealedPartyAEncryption = :sealedPartyAEncryption, updatedAtEpochMs = :updatedAtEpochMs " +

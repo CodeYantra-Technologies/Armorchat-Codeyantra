@@ -1,6 +1,7 @@
 package com.codeyantra.armorchat.deal.storage
 
 import com.codeyantra.armorchat.deal.domain.CanonicalDeal
+import com.codeyantra.armorchat.deal.domain.DealStatus
 import com.codeyantra.armorchat.deal.domain.SigningProgress
 import com.codeyantra.armorchat.deal.domain.SigningWorkflow
 
@@ -34,6 +35,16 @@ class SigningProgressStore(
         if (existing.status == progress.storedStatus.name &&
             existing.currentVersionId == progress.deal.versionId
         ) {
+            return
+        }
+        val from = try {
+            DealStatus.valueOf(existing.status)
+        } catch (e: IllegalArgumentException) {
+            return
+        }
+        // A closed agreement stays closed. Earlier finalized claims can still
+        // follow a recovered journal, including a new negotiating version.
+        if (from == DealStatus.CLOSED && progress.storedStatus != DealStatus.CLOSED) {
             return
         }
         dao.updateDeal(

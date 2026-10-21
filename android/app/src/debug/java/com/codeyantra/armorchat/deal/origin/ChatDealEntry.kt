@@ -16,6 +16,7 @@ import com.codeyantra.armorchat.deal.transport.DealConsentBlock
 import com.codeyantra.armorchat.deal.transport.DealConsentChecklist
 import com.codeyantra.armorchat.deal.transport.DealConsentGate
 import com.codeyantra.armorchat.deal.transport.DealDocumentPresenter
+import com.codeyantra.armorchat.deal.domain.DealClosure
 import com.codeyantra.armorchat.deal.transport.DealSignConfirmation
 import com.codeyantra.armorchat.deal.transport.DealSigningControls
 import com.codeyantra.armorchat.deal.transport.DealViewerState
@@ -324,6 +325,29 @@ private fun SigningPanel(
         style = MaterialTheme.typography.bodySmall,
         color = colors.onSurfaceVariant,
     )
+    if (signing.proven && signing.closureHeadline.isNotEmpty()) {
+        Spacer(Modifier.height(12.dp))
+        Text(signing.closureHeadline, style = MaterialTheme.typography.bodyMedium)
+        if (signing.closureTrusted && signing.closureRolesBound) {
+            Text(
+                if (signing.buyerConfirmed) "Buyer confirmation: recorded" else "Buyer confirmation: waiting",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.onSurfaceVariant,
+            )
+            Text(
+                if (signing.supplierConfirmed) "Supplier confirmation: recorded" else "Supplier confirmation: waiting",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.onSurfaceVariant,
+            )
+        }
+        val closureKind = signing.localClosureKind
+        if (signing.canConfirmClosure && closureKind != null) {
+            Spacer(Modifier.height(8.dp))
+            Button(onClick = { model.confirmClosure() }, modifier = Modifier.fillMaxWidth()) {
+                Text(DealClosure.confirmLabel(closureKind))
+            }
+        }
+    }
     Spacer(Modifier.height(8.dp))
     Button(onClick = { model.openViewer(true) }, modifier = Modifier.fillMaxWidth()) {
         Text(if (signing.proven) "Open the signed agreement" else "Read the complete agreement")
@@ -613,6 +637,10 @@ private class ChatDealDraftModel(
     }
 
     fun sign() = act("The signature was not sent.") { entry.messaging().signDeal(conversationId) }
+
+    fun confirmClosure() = act("The confirmation was not sent.") {
+        entry.messaging().confirmDealClosure(conversationId)
+    }
 
     fun openViewer(open: Boolean) = stateFlow.update { it.copy(viewerOpen = open) }
 

@@ -484,6 +484,10 @@ class ChatMessagingService @Inject constructor(
     suspend fun signDeal(conversationId: String): SendTextResult =
         dealSession(conversationId, "sign") { it.signBoundDeal() }
 
+    /** Confirms this phone's own closure kind. Debug builds only. No chat row is written. */
+    suspend fun confirmDealClosure(conversationId: String): SendTextResult =
+        dealSession(conversationId, "closure") { it.confirmBoundClosure() }
+
     /** Phase 5.4D: local review consent for the current complete document. Sends nothing. */
     suspend fun recordDealReview(conversationId: String): SendTextResult =
         dealSession(conversationId, "review_consent") { it.recordBoundReview() }

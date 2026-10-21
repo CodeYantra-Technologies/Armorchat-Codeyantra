@@ -171,3 +171,23 @@ data class DealTransportRow(
     val createdAtEpochMs: Long,
     val updatedAtEpochMs: Long,
 )
+
+/**
+ * One closure confirmation. This is not a [DealSignatureRow]. The signature
+ * covers the deal, version, party, role, and document hash. Terms are not columns.
+ */
+@Entity(
+    tableName = "deal_closures",
+    primaryKeys = ["dealId", "versionId", "partyId", "kind"],
+    indices = [Index("dealId")],
+)
+data class DealClosureRow(
+    val dealId: String,
+    val versionId: String,
+    val partyId: String,
+    val kind: String,
+    val signature: ByteArray,
+    val signerPublicKey: String,
+    val documentSha256: String,
+    val createdAtEpochMs: Long,
+)

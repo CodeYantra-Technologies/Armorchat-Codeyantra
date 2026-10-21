@@ -168,6 +168,13 @@ class DealLabController(
         } catch (e: DealStateException) {
             return reject(session, "transition_rejected", e.message ?: "Transition refused.")
         }
+        if (event == DealEvent.CLOSE) {
+            return reject(
+                session,
+                "transition_rejected",
+                "Closure needs both parties to confirm. This lab will not mark the agreement closed. Status stays ${session.status}.",
+            )
+        }
         if (event == DealEvent.EXECUTE ||
             event == DealEvent.MARK_BACKUP_PENDING ||
             event == DealEvent.PARTIAL_SIGN ||
@@ -725,6 +732,7 @@ object DealStatusNames {
         "REJECTED" -> "Rejected"
         "EXPIRED" -> "Expired"
         "EXECUTED" -> "Executed"
+        "CLOSED" -> "Closed"
         else -> status
     }
 }

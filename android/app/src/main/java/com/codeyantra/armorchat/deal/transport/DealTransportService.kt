@@ -8,7 +8,10 @@ import com.codeyantra.armorchat.deal.crypto.PartyWrapTarget
 import com.codeyantra.armorchat.deal.crypto.SealedDocument
 import com.codeyantra.armorchat.deal.domain.CanonicalDeal
 import com.codeyantra.armorchat.deal.domain.CanonicalEncoding
+import com.codeyantra.armorchat.deal.domain.ClosureAdmit
+import com.codeyantra.armorchat.deal.domain.ClosureConfirmation
 import com.codeyantra.armorchat.deal.domain.ContractAnnex
+import com.codeyantra.armorchat.deal.domain.DealClosure
 import com.codeyantra.armorchat.deal.domain.DealAlreadySignedException
 import com.codeyantra.armorchat.deal.domain.DealConflictException
 import com.codeyantra.armorchat.deal.domain.DealCryptoException
@@ -31,6 +34,7 @@ import com.codeyantra.armorchat.deal.domain.SignAction
 import com.codeyantra.armorchat.deal.domain.SigningProgress
 import com.codeyantra.armorchat.deal.domain.SigningStage
 import com.codeyantra.armorchat.deal.domain.SigningWorkflow
+import com.codeyantra.armorchat.deal.storage.DealClosureStore
 import com.codeyantra.armorchat.deal.storage.DealSignatureRow
 import com.codeyantra.armorchat.deal.storage.SigningProgressStore
 import com.codeyantra.armorchat.deal.draft.DealDraftStore
@@ -263,6 +267,37 @@ class DealTransportService(
                 DealEnvelopes.signaturePayload(partyId, produced.signature, produced.signerPublicKey),
             )
             queue(envelope, "signing_sign_queued")
+        })
+    }
+
+    /**
+     * Confirms this phone's own closure kind with this phone's deal key.
+     * A duplicate confirmation is queued again for the peer and does not
+     * write a second CLOSED transition.
+     */
+    fun queueOwnClosure(dealId: String): DealTransportResult {
+        gate()
+        return database.runInTransaction(Callable {
+            val deal = openCurrent(dealId)
+            val partyId = localPartyId(deal)
+            val keys = loadKeys(partyId) ?: throw DealStateException("The local deal key is missing.")
+            val confirmation = DealClosure.sign(deal, partyId, keys.signingHandle())
+            val admitted = DealClosureStore(database, clock).admit(deal, confirmation)
+            if (admitted.admit == ClosureAdmit.REJECTED) {
+                throw DealStateException("Closure is not available for this agreement.")
+            }
+            val envelope = message(
+                DealWireEvent.CLOSURE,
+                deal.dealId,
+                deal.versionId,
+                DealEnvelopes.closurePayload(
+                    confirmation.kind,
+                    confirmation.partyId,
+                    confirmation.signature,
+                    confirmation.signerPublicKey,
+                ),
+            )
+            queue(envelope, "closure_queued")
         })
     }
 
@@ -563,6 +598,7 @@ class DealTransportService(
         DealWireEvent.SIGNATURE -> applySignature(envelope)
         DealWireEvent.SIGNING_REJECTION -> applySigningRejection(envelope)
         DealWireEvent.SIGNING_REVISION -> applySigningRevision(envelope)
+        DealWireEvent.CLOSURE -> applyClosure(envelope)
     }
 
     private fun applyOffer(envelope: DealEnvelope, revised: Boolean): String {
@@ -991,6 +1027,28 @@ class DealTransportService(
         return record(envelope, DealTransportState.APPLIED, "signing_sign")
     }
 
+    private fun applyClosure(envelope: DealEnvelope): String {
+        val current = findCurrent(envelope.dealId) ?: return record(envelope, DealTransportState.WAITING, "waiting")
+        if (current.versionId != envelope.versionId) return staleOrWaiting(envelope)
+        val parsed = DealEnvelopes.parseClosure(envelope.payload)
+        requireSenderIsParty(current, envelope, parsed.partyId)
+        val confirmation = ClosureConfirmation(
+            dealId = envelope.dealId,
+            versionId = envelope.versionId,
+            partyId = parsed.partyId,
+            kind = parsed.kind,
+            signature = parsed.signature,
+            signerPublicKey = parsed.signerPublicKey,
+        )
+        val admitted = DealClosureStore(database, clock).admit(current, confirmation)
+        return when (admitted.admit) {
+            ClosureAdmit.ACCEPTED, ClosureAdmit.CLOSED ->
+                record(envelope, DealTransportState.APPLIED, "closure_received")
+            ClosureAdmit.DUPLICATE -> record(envelope, DealTransportState.DUPLICATE, "closure_duplicate")
+            ClosureAdmit.REJECTED -> record(envelope, DealTransportState.REJECTED, "closure_rejected")
+        }
+    }
+
     private fun applySigningRejection(envelope: DealEnvelope): String {
         val current = findCurrent(envelope.dealId) ?: return record(envelope, DealTransportState.WAITING, "waiting")
         if (current.versionId != envelope.versionId) return staleOrWaiting(envelope)
@@ -1022,6 +1080,9 @@ class DealTransportService(
         }
         val parentId = successor.parentVersionId ?: throw DealFormatException("Deal envelope was rejected.")
         val row = dao.findDeal(envelope.dealId) ?: return record(envelope, DealTransportState.WAITING, "waiting")
+        if (row.status == DealStatus.CLOSED.name) {
+            return record(envelope, DealTransportState.REJECTED, "signing_rejected")
+        }
         if (dao.findVersion(envelope.dealId, parentId) == null) {
             return record(envelope, DealTransportState.WAITING, "waiting")
         }

@@ -14,8 +14,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
  * Version 2 adds [DealDraftRow] only. [MIGRATION_1_2] creates that table and
  * does not rewrite deals, versions, signatures, receipts, audits, recovery, or
  * local keys. Version 3 adds [DealTransportRow] only. [MIGRATION_2_3] creates
- * that table and does not rewrite earlier rows. Production navigation does not
- * open this database. The debug lab and the debug chat draft may open [FILE_NAME].
+ * that table and does not rewrite earlier rows. Version 4 adds [DealClosureRow]
+ * only. [MIGRATION_3_4] creates that table and does not rewrite earlier rows.
+ * Production navigation does not open this database. The debug lab and the
+ * debug chat draft may open [FILE_NAME].
  */
 @Database(
     entities = [
@@ -29,8 +31,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         DealLocalKeyRow::class,
         DealDraftRow::class,
         DealTransportRow::class,
+        DealClosureRow::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class DealDatabase : RoomDatabase() {
@@ -94,6 +97,27 @@ abstract class DealDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `deal_closures` (" +
+                        "`dealId` TEXT NOT NULL, " +
+                        "`versionId` TEXT NOT NULL, " +
+                        "`partyId` TEXT NOT NULL, " +
+                        "`kind` TEXT NOT NULL, " +
+                        "`signature` BLOB NOT NULL, " +
+                        "`signerPublicKey` TEXT NOT NULL, " +
+                        "`documentSha256` TEXT NOT NULL, " +
+                        "`createdAtEpochMs` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`dealId`, `versionId`, `partyId`, `kind`))",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_deal_closures_dealId` " +
+                        "ON `deal_closures` (`dealId`)",
+                )
+            }
+        }
+
         @Volatile private var instance: DealDatabase? = null
 
         fun open(context: Context): DealDatabase {
@@ -107,7 +131,7 @@ abstract class DealDatabase : RoomDatabase() {
 
         fun builder(context: Context, name: String): Builder<DealDatabase> =
             Room.databaseBuilder(context, DealDatabase::class.java, name)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
 
         fun inMemory(context: Context): DealDatabase =
             Room.inMemoryDatabaseBuilder(context, DealDatabase::class.java).build()

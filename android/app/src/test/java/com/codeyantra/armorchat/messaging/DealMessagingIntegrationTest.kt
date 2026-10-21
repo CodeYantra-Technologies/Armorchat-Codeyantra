@@ -512,7 +512,7 @@ class DealMessagingIntegrationTest {
         assertEquals(2, recovered.signatures.map { it.partyId }.distinct().size)
         assertTrue(recovered.signatures.all { it.action == SignAction.SIGN })
         assertTrue(DealLifecycle.isFinalized(DealStatus.FULLY_SIGNED, recovered.verdict()))
-        assertEquals(3, link.alice.database.openHelper.readableDatabase.version)
+        assertEquals(4, link.alice.database.openHelper.readableDatabase.version)
         assertFalse(DealFeature.PRODUCTION_UI_ENABLED)
         assertTrue(link.alice.database.dealDao().findVersion(dealId, aliceDeal.currentVersionId)!!.immutable)
         val proposal = link.open(link.alice, dealId, link.alice.database.dealDao().versions(dealId).first { it.parentVersionId == null }.versionId, PartyRole.PROPOSER)

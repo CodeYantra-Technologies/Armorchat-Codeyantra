@@ -92,6 +92,8 @@ class DealChatBridge(
 
     suspend fun signBoundDeal(): String = sendBound { service, dealId -> service.queueOwnSignature(dealId) }
 
+    suspend fun confirmBoundClosure(): String = sendBound { service, dealId -> service.queueOwnClosure(dealId) }
+
     suspend fun reviseBoundDeal(terms: String): String =
         sendBound { service, dealId -> service.queueSigningRevision(dealId, terms) }
 
@@ -227,6 +229,7 @@ class DealChatBridge(
         DealWireEvent.SIGNATURE,
         DealWireEvent.SIGNING_REJECTION,
         DealWireEvent.SIGNING_REVISION,
+        DealWireEvent.CLOSURE,
         -> eitherParty(conversationId)
     }
 

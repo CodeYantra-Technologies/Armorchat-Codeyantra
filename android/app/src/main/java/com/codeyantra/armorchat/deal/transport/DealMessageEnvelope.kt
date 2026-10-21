@@ -6,6 +6,7 @@ import com.codeyantra.armorchat.deal.crypto.DealKeyMaterial
 import com.codeyantra.armorchat.deal.crypto.DealTink
 import com.codeyantra.armorchat.deal.domain.AgreementDetails
 import com.codeyantra.armorchat.deal.domain.ByteArrayOutput
+import com.codeyantra.armorchat.deal.domain.ClosureKind
 import com.codeyantra.armorchat.deal.domain.ContractAnnex
 import com.codeyantra.armorchat.deal.domain.DealCryptoException
 import com.codeyantra.armorchat.deal.domain.DealFormatException
@@ -44,6 +45,7 @@ enum class DealWireEvent(val code: Int, val wire: String) {
     SIGNATURE(9, "SIGNATURE"),
     SIGNING_REJECTION(10, "SIGNING_REJECTION"),
     SIGNING_REVISION(11, "SIGNING_REVISION"),
+    CLOSURE(12, "CLOSURE"),
     ;
 
     companion object {
@@ -347,6 +349,15 @@ class ParsedDealSignature(
     val signerPublicKey: ByteArray,
 ) {
     override fun toString(): String = "ParsedDealSignature"
+}
+
+class ParsedClosure(
+    val kind: ClosureKind,
+    val partyId: String,
+    val signature: ByteArray,
+    val signerPublicKey: ByteArray,
+) {
+    override fun toString(): String = "ParsedClosure"
 }
 
 class ParsedRevision(
@@ -731,6 +742,30 @@ object DealEnvelopes {
         val signer = cursor.key()
         if (cursor.remaining() != 0) throw DealFormatException("Deal envelope was rejected.")
         return ParsedDealSignature(partyId, signature, signer)
+    }
+
+    fun closurePayload(kind: ClosureKind, partyId: String, signature: ByteArray, signerPublic: ByteArray): ByteArray {
+        DealIds.require(partyId)
+        if (signature.size != 64) throw DealFormatException("Ed25519 signature must be 64 bytes.")
+        requireRawKey(signerPublic, "signing")
+        val out = ByteArrayOutput()
+        out.u8(kind.code)
+        out.lp(partyId)
+        out.raw(signature)
+        out.u16(signerPublic.size)
+        out.raw(signerPublic)
+        return out.toByteArray()
+    }
+
+    fun parseClosure(payload: ByteArray): ParsedClosure {
+        val cursor = DealCursor(payload)
+        val kind = ClosureKind.fromCode(cursor.u8())
+        val partyId = cursor.lp()
+        DealIds.require(partyId)
+        val signature = cursor.bytes(64)
+        val signer = cursor.key()
+        if (cursor.remaining() != 0) throw DealFormatException("Deal envelope was rejected.")
+        return ParsedClosure(kind, partyId, signature, signer)
     }
 
     fun revisionPayload(canonicalBytes: ByteArray, signature: ByteArray): ByteArray {

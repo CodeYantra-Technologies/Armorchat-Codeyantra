@@ -5,11 +5,16 @@ import com.codeyantra.armorchat.deal.crypto.DealKeyMaterial
 import com.codeyantra.armorchat.deal.crypto.DealKeyProtector
 import com.codeyantra.armorchat.deal.crypto.SealedDocument
 import com.codeyantra.armorchat.deal.domain.CanonicalEncoding
+import com.codeyantra.armorchat.deal.domain.ClosureKind
+import com.codeyantra.armorchat.deal.domain.ClosureState
+import com.codeyantra.armorchat.deal.domain.DealClosure
 import com.codeyantra.armorchat.deal.domain.DealException
+import com.codeyantra.armorchat.deal.domain.DealStatus
 import com.codeyantra.armorchat.deal.domain.PartyRole
 import com.codeyantra.armorchat.deal.domain.SignAction
 import com.codeyantra.armorchat.deal.domain.SigningStage
 import com.codeyantra.armorchat.deal.domain.SigningUi
+import com.codeyantra.armorchat.deal.storage.DealClosureStore
 import com.codeyantra.armorchat.deal.storage.DealDatabase
 import com.codeyantra.armorchat.deal.storage.DealRepository
 import com.codeyantra.armorchat.deal.storage.SigningProgressStore
@@ -41,6 +46,13 @@ class DealSigningSnapshot(
     val document: DealDocumentResult = DealDocumentResult.Failed(DealDocumentResult.NOT_LOADED),
     /** Phase 5.4C: a local review consent exists for this exact version/hash and local party. */
     val ownReviewConsent: Boolean = false,
+    val closureHeadline: String = "",
+    val closureRolesBound: Boolean = false,
+    val closureTrusted: Boolean = true,
+    val buyerConfirmed: Boolean = false,
+    val supplierConfirmed: Boolean = false,
+    val canConfirmClosure: Boolean = false,
+    val localClosureKind: ClosureKind? = null,
 ) {
     override fun toString(): String = "DealSigningSnapshot(stage=$stage, role=$role, proven=$proven)"
 }
@@ -93,21 +105,31 @@ object DealSigningLookup {
             val ownSignature = progress.signatures.any {
                 it.partyId == localPin.partyId && it.action == SignAction.SIGN
             }
+            val closureStore = DealClosureStore(database)
+            val projection = closureStore.project(deal)
+            val proven = progress.verdict().proven || closureStore.finalityProven(deal)
+            val integrityFailure = row.status == DealStatus.CLOSED.name && projection.state != ClosureState.CLOSED
+            val localKind = if (projection.rolesBound) DealClosure.kindFor(deal, localPin.partyId) else null
+            val localConfirmed = when (localKind) {
+                ClosureKind.GOODS_RECEIVED -> projection.buyerConfirmed
+                ClosureKind.PAYMENT_RECEIVED -> projection.supplierConfirmed
+                null -> false
+            }
             best = DealSigningSnapshot(
                 dealId = deal.dealId,
                 versionId = deal.versionId,
                 stage = progress.stage,
                 role = localPin.role,
-                proven = progress.verdict().proven,
+                proven = proven,
                 ownNameConfirmed = ownName,
                 ownSignature = ownSignature,
                 terms = deal.terms,
                 ownLegalName = localPin.legalName,
                 canReview = SigningUi.canReview(progress.stage, localPin.role),
                 canConfirmName = SigningUi.canConfirmName(progress.stage, ownName),
-                canSign = SigningUi.canSign(progress.stage, ownSignature, progress.verdict().proven),
-                canRevise = SigningUi.canRevise(progress.stage, localPin.role, progress.verdict().proven),
-                canReject = SigningUi.canReject(progress.stage, progress.verdict().proven),
+                canSign = SigningUi.canSign(progress.stage, ownSignature, proven),
+                canRevise = SigningUi.canRevise(progress.stage, localPin.role, proven),
+                canReject = SigningUi.canReject(progress.stage, proven),
                 proposerArmorChatId = pins.firstOrNull { it.role == PartyRole.PROPOSER }
                     ?.participant?.armorChatId.orEmpty(),
                 counterpartyArmorChatId = pins.firstOrNull { it.role == PartyRole.COUNTERPARTY }
@@ -117,6 +139,14 @@ object DealSigningLookup {
                     it.action == DealReviewConsent.ACTION &&
                         it.outcome == DealReviewConsent.outcome(deal.versionId, version.documentSha256, localPin.partyId)
                 },
+                closureHeadline = DealClosure.headline(projection, proven, integrityFailure),
+                closureRolesBound = projection.rolesBound,
+                closureTrusted = !integrityFailure,
+                buyerConfirmed = projection.buyerConfirmed,
+                supplierConfirmed = projection.supplierConfirmed,
+                canConfirmClosure = closureStore.finalityProven(deal) && !integrityFailure && projection.rolesBound &&
+                    localKind != null && !localConfirmed && projection.state != ClosureState.CLOSED,
+                localClosureKind = localKind,
             )
             bestUpdated = row.updatedAtEpochMs
         }
