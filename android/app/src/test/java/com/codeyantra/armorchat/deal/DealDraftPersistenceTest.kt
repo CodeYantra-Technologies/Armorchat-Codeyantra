@@ -27,8 +27,11 @@ import com.codeyantra.armorchat.deal.draft.DealDrafts
 import com.codeyantra.armorchat.deal.draft.OpenedLocalDraft
 import com.codeyantra.armorchat.deal.origin.ChatDealFactory
 import com.codeyantra.armorchat.deal.origin.ChatDealIds
+import com.codeyantra.armorchat.deal.storage.DealClosureRow
 import com.codeyantra.armorchat.deal.storage.DealDatabase
 import com.codeyantra.armorchat.deal.storage.DealRepository
+import com.codeyantra.armorchat.deal.storage.DealRow
+import com.codeyantra.armorchat.deal.storage.DealTransportRow
 import com.codeyantra.armorchat.deal.testing.SoftwareDealKeyProtector
 import com.codeyantra.armorchat.deal.testing.signedFixture
 import com.codeyantra.armorchat.deal.testing.toHex
@@ -655,6 +658,179 @@ class DealDraftPersistenceTest {
     }
 
     @Test
+    fun anUnsentDraftIsResumedInsteadOfReplaced() {
+        val name = "draft-unsent-${UUID.randomUUID()}.db"
+        context.deleteDatabase(name)
+        val database = fileDb(name)
+        val world = World()
+        try {
+            val store = world.store(database)
+            val first = store.createFromChat(
+                world.local, world.conversation, world.contact, world.secretEditor(), world.keysA, world.signer,
+            )
+            val payload = database.dealDao().findDraft(first.draftId)!!.sealedPayload.copyOf()
+            val blocked = assertThrows(DealStateException::class.java) {
+                store.createFromChat(
+                    world.local, world.conversation, world.contact, world.secretEditor(), world.keysA, world.signer,
+                )
+            }
+            assertTrue(blocked.message!!.contains("already has a local draft"))
+            assertArrayEquals(payload, database.dealDao().findDraft(first.draftId)!!.sealedPayload)
+            assertEquals(DealDrafts.STATUS_LOCAL, database.dealDao().findDraft(first.draftId)!!.status)
+            assertEquals(first.draftId, store.unsent(world.conversation.id)!!.draftId)
+            assertEquals(first.ids.dealId, store.active(world.conversation.id)!!.ids.dealId)
+
+            val resumed = store.update(
+                first.draftId,
+                resumedEditor(),
+                world.local,
+                world.conversation,
+                world.contact,
+            )
+            assertEquals(first.ids.dealId, resumed.ids.dealId)
+            assertEquals(first.draftId, resumed.draftId)
+            assertEquals("Resumed agreement", resumed.editor.title)
+            assertEquals(SECRET_TERMS, resumed.editor.terms)
+
+            database.dealDao().insertDeal(
+                DealRow("z".repeat(22), "FULLY_SIGNED", "y".repeat(22), 10L, 11L),
+            )
+            database.dealDao().insertClosure(
+                DealClosureRow(
+                    dealId = "z".repeat(22),
+                    versionId = "y".repeat(22),
+                    partyId = "p".repeat(22),
+                    kind = "GOODS_RECEIVED",
+                    signature = byteArrayOf(1),
+                    signerPublicKey = "signer",
+                    documentSha256 = "hash",
+                    createdAtEpochMs = 12L,
+                ),
+            )
+            val stillBlocked = assertThrows(DealStateException::class.java) {
+                store.createFromChat(
+                    world.local, world.conversation, world.contact, world.secretEditor(), world.keysA, world.signer,
+                )
+            }
+            assertTrue(stillBlocked.message!!.contains("already has a local draft"))
+            assertEquals(1, database.dealDao().draftCount())
+            database.close()
+
+            val reopened = fileDb(name)
+            try {
+                val again = world.store(reopened)
+                val opened = again.unsent(world.conversation.id)
+                assertEquals(first.draftId, opened!!.draftId)
+                assertEquals(first.ids.dealId, opened.ids.dealId)
+                assertEquals("Resumed agreement", opened.editor.title)
+                assertEquals(SECRET_TERMS, opened.editor.terms)
+                assertThrows(DealStateException::class.java) {
+                    again.createFromChat(
+                        world.local, world.conversation, world.contact, world.secretEditor(), world.keysA, world.signer,
+                    )
+                }
+                assertEquals(DealDrafts.STATUS_LOCAL, reopened.dealDao().findDraft(first.draftId)!!.status)
+            } finally {
+                reopened.close()
+            }
+        } finally {
+            context.deleteDatabase(name)
+        }
+    }
+
+    @Test
+    fun aTransportRecordForThatDealAllowsASecondDraft() {
+        val name = "draft-transport-${UUID.randomUUID()}.db"
+        context.deleteDatabase(name)
+        val database = fileDb(name)
+        val world = World()
+        try {
+            val store = world.store(database)
+            val first = store.createFromChat(
+                world.local, world.conversation, world.contact, world.secretEditor(), world.keysA, world.signer,
+            )
+            val payload = database.dealDao().findDraft(first.draftId)!!.sealedPayload.copyOf()
+            database.dealDao().insertTransport(
+                DealTransportRow(
+                    envelopeId = "t".repeat(22),
+                    dealId = first.ids.dealId,
+                    versionId = first.ids.versionId,
+                    conversationId = world.conversation.id,
+                    direction = "OUT",
+                    eventType = "PROPOSAL",
+                    status = "QUEUED",
+                    sealedEnvelope = byteArrayOf(9, 9, 9),
+                    createdAtEpochMs = 20L,
+                    updatedAtEpochMs = 21L,
+                ),
+            )
+            assertEquals(listOf(first.ids.dealId), store.pendingSentDealIds(world.conversation.id))
+            assertNull(store.unsent(world.conversation.id))
+            val second = store.createFromChat(
+                world.local, world.conversation, world.contact, world.secretEditor(), world.keysA, world.signer,
+            )
+            assertNotEquals(first.ids.dealId, second.ids.dealId)
+            assertNotEquals(first.draftId, second.draftId)
+            assertArrayEquals(payload, database.dealDao().findDraft(first.draftId)!!.sealedPayload)
+            assertEquals(DealDrafts.STATUS_LOCAL, database.dealDao().findDraft(first.draftId)!!.status)
+            assertNull(database.dealDao().findDeal(first.ids.dealId))
+            val replaced = assertThrows(DealStateException::class.java) {
+                store.update(first.draftId, resumedEditor(), world.local, world.conversation, world.contact)
+            }
+            assertTrue(replaced.message!!.contains("cannot be replaced"))
+            assertEquals(second.draftId, store.unsent(world.conversation.id)!!.draftId)
+            database.close()
+
+            val reopened = fileDb(name)
+            try {
+                val again = world.store(reopened)
+                assertEquals(2, reopened.dealDao().draftCount())
+                assertEquals(second.ids.dealId, again.unsent(world.conversation.id)!!.ids.dealId)
+                assertArrayEquals(payload, reopened.dealDao().findDraft(first.draftId)!!.sealedPayload)
+                assertEquals(listOf(first.ids.dealId), again.pendingSentDealIds(world.conversation.id))
+                assertEquals(1, reopened.dealDao().transportCountForDeal(first.ids.dealId))
+            } finally {
+                reopened.close()
+            }
+        } finally {
+            context.deleteDatabase(name)
+        }
+    }
+
+    @Test
+    fun aStoredRowForThatDealAllowsASecondDraftWithoutChangingTheRow() {
+        val world = World()
+        val database = memoryDb()
+        try {
+            val store = world.store(database)
+            val first = store.createFromChat(
+                world.local, world.conversation, world.contact, world.secretEditor(), world.keysA, world.signer,
+            )
+            val payload = database.dealDao().findDraft(first.draftId)!!.sealedPayload.copyOf()
+            database.dealDao().insertDeal(
+                DealRow(first.ids.dealId, "FULLY_SIGNED", first.ids.versionId, 30L, 31L),
+            )
+            assertTrue(store.pendingSentDealIds(world.conversation.id).isEmpty())
+            assertNull(store.unsent(world.conversation.id))
+            val second = store.createFromChat(
+                world.local, world.conversation, world.contact, world.secretEditor(), world.keysA, world.signer,
+            )
+            assertNotEquals(first.ids.dealId, second.ids.dealId)
+            assertArrayEquals(payload, database.dealDao().findDraft(first.draftId)!!.sealedPayload)
+            assertEquals(DealDrafts.STATUS_LOCAL, database.dealDao().findDraft(first.draftId)!!.status)
+            assertEquals("FULLY_SIGNED", database.dealDao().findDeal(first.ids.dealId)!!.status)
+            assertEquals(31L, database.dealDao().findDeal(first.ids.dealId)!!.updatedAtEpochMs)
+            val replaced = assertThrows(DealStateException::class.java) {
+                store.update(first.draftId, resumedEditor(), world.local, world.conversation, world.contact)
+            }
+            assertTrue(replaced.message!!.contains("cannot be replaced"))
+            assertEquals(second.draftId, store.unsent(world.conversation.id)!!.draftId)
+        } finally {
+            database.close()
+        }
+    }
+
+    @Test
     fun schemaUpgradeAddsDraftsWithoutRewritingSignedRows() {
         val name = "draft-migrate-${UUID.randomUUID()}.db"
         context.deleteDatabase(name)
@@ -722,6 +898,20 @@ class DealDraftPersistenceTest {
             context.deleteDatabase(name)
         }
     }
+
+    private fun resumedEditor() = DealDraftEditor(
+        title = "Resumed agreement",
+        purpose = SECRET_PURPOSE,
+        proposerRole = "Client",
+        counterpartyRole = "Provider",
+        terms = SECRET_TERMS,
+        paymentConditions = "Pay on acceptance of the work.",
+        currency = "INR",
+        amountMinor = 150050L,
+        deadlineDate = "2026-12-31",
+        effectiveDate = "2026-11-01",
+        partyALegalName = SECRET_NAME,
+    )
 
     private fun memoryDb(): DealDatabase =
         Room.inMemoryDatabaseBuilder(context, DealDatabase::class.java).allowMainThreadQueries().build()

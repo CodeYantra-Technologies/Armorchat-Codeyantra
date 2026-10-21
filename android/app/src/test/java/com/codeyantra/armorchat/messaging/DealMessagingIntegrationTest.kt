@@ -43,6 +43,8 @@ import com.codeyantra.armorchat.deal.transport.DealFrameChunk
 import com.codeyantra.armorchat.deal.transport.DealFrameInbox
 import com.codeyantra.armorchat.deal.transport.DealMessagingSession
 import com.codeyantra.armorchat.deal.transport.DealOffers
+import com.codeyantra.armorchat.deal.transport.DealReviewConsent
+import com.codeyantra.armorchat.deal.transport.DealSigningLookup
 import com.codeyantra.armorchat.deal.transport.DealTransportService
 import com.codeyantra.armorchat.deal.transport.DealTransportState
 import com.codeyantra.armorchat.deal.transport.DealWireEvent
@@ -704,6 +706,88 @@ class DealMessagingIntegrationTest {
         assertEquals(SECRET_TERMS, previous.terms)
         assertStateRefused { link.alice.bridge.signWithConsent() }
         assertEquals(0, link.alice.database.dealDao().signatureCount(dealId))
+        link.close()
+    }
+
+    @Test
+    fun anActionOnAnOlderDealDoesNotChangeTheNewerDeal() {
+        val link = Link()
+        val firstDraft = link.draft("First agreement terms stay sealed")
+        val firstPayload = link.alice.database.dealDao().findDraft(firstDraft)!!.sealedPayload.copyOf()
+        blocking {
+            link.alice.bridge.sendDraft(firstDraft, link.alice.user, link.alice.conversation, link.alice.contact)
+            link.drain()
+        }
+        val firstId = link.dealId(firstDraft)
+        link.now += 60_000L
+        val secondDraft = link.draft("Second agreement terms stay sealed")
+        blocking {
+            link.alice.bridge.sendDraft(secondDraft, link.alice.user, link.alice.conversation, link.alice.contact)
+            link.drain()
+        }
+        val secondId = link.dealId(secondDraft)
+        assertNotEquals(firstId, secondId)
+        assertTrue(firstPayload.contentEquals(link.alice.database.dealDao().findDraft(firstDraft)!!.sealedPayload))
+        assertEquals("LOCAL_DRAFT", link.alice.database.dealDao().findDraft(firstDraft)!!.status)
+        assertEquals(secondId, link.alice.bridge.signingSnapshot()!!.dealId)
+        assertEquals(secondId, link.bob.bridge.signingSnapshot()!!.dealId)
+
+        fun consents(phone: Phone, dealId: String) =
+            phone.database.dealDao().audits(dealId).count { it.action == DealReviewConsent.ACTION }
+
+        link.bob.bridge.recordBoundReview(firstId)
+        link.bob.bridge.recordBoundReview(firstId)
+        link.alice.bridge.recordBoundReview(firstId)
+        assertEquals(1, consents(link.bob, firstId))
+        assertEquals(1, consents(link.alice, firstId))
+        assertEquals(0, consents(link.bob, secondId))
+        assertEquals(0, consents(link.alice, secondId))
+        assertEquals(secondId, link.bob.bridge.signingSnapshot()!!.dealId)
+
+        val secondRow = link.bob.database.dealDao().findDeal(secondId)!!
+        val secondBytes = link.bob.database.dealDao()
+            .findVersion(secondId, secondRow.currentVersionId)!!.sealedDocument.copyOf()
+        val secondStatus = secondRow.status
+        blocking {
+            link.bob.bridge.rejectBoundDeal(firstId, "Declined.")
+            link.drain()
+        }
+        assertEquals(DealStatus.REJECTED.name, link.bob.database.dealDao().findDeal(firstId)!!.status)
+        assertEquals(DealStatus.REJECTED.name, link.alice.database.dealDao().findDeal(firstId)!!.status)
+        assertEquals(secondStatus, link.bob.database.dealDao().findDeal(secondId)!!.status)
+        assertEquals(secondStatus, link.alice.database.dealDao().findDeal(secondId)!!.status)
+        assertTrue(
+            secondBytes.contentEquals(
+                link.bob.database.dealDao().findVersion(secondId, secondRow.currentVersionId)!!.sealedDocument,
+            ),
+        )
+        assertEquals(0, consents(link.bob, secondId))
+        assertThrows(DealStateException::class.java) {
+            link.bob.bridge.recordBoundReview("z".repeat(22))
+        }
+        assertThrows(DealFormatException::class.java) {
+            link.bob.bridge.recordBoundReview("not-a-deal-id")
+        }
+        assertEquals(0, consents(link.alice, secondId))
+        assertEquals(DealStatus.REJECTED.name, link.bob.database.dealDao().findDeal(firstId)!!.status)
+        val peerKey = Base64Url.decode(link.bob.contact.publicIdentityKey)
+        assertEquals(
+            setOf(firstId, secondId),
+            DealSigningLookup.list(link.bob.database, link.bob.protector, link.bob.publicKey, peerKey)
+                .map { it.dealId }.toSet(),
+        )
+        assertEquals(
+            SigningStage.REJECTED,
+            DealSigningLookup.findById(
+                link.bob.database, link.bob.protector, link.bob.publicKey, peerKey, firstId,
+            )!!.stage,
+        )
+        assertNotEquals(
+            SigningStage.REJECTED,
+            DealSigningLookup.findById(
+                link.bob.database, link.bob.protector, link.bob.publicKey, peerKey, secondId,
+            )!!.stage,
+        )
         link.close()
     }
 

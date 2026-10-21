@@ -2,6 +2,7 @@ package com.codeyantra.armorchat.messaging
 
 import com.codeyantra.armorchat.deal.crypto.DealKeyProtector
 import com.codeyantra.armorchat.deal.domain.DealFormatException
+import com.codeyantra.armorchat.deal.domain.DealIds
 import com.codeyantra.armorchat.deal.domain.DealMessagingSigner
 import com.codeyantra.armorchat.deal.domain.DealStateException
 import com.codeyantra.armorchat.deal.transport.DealDocumentResult
@@ -70,35 +71,38 @@ class DealChatBridge(
         peerParticipant.messagingPublicKey,
     )
 
-    suspend fun reviewBoundDeal(): String = sendBound { service, dealId -> service.queuePartyBReview(dealId) }
+    suspend fun reviewBoundDeal(dealId: String): String =
+        sendBound(dealId) { service, id -> service.queuePartyBReview(id) }
 
-    suspend fun confirmBoundName(legalName: String): String =
-        sendBound { service, dealId -> service.queueOwnName(dealId, legalName) }
+    suspend fun confirmBoundName(dealId: String, legalName: String): String =
+        sendBound(dealId) { service, id -> service.queueOwnName(id, legalName) }
 
     /**
-     * Phase 5.4D: records local review consent for the complete document this
-     * phone can display (fail closed if it cannot render). Sends nothing.
+     * Records local review consent for [dealId]. Sends nothing.
+     * The id is the selected agreement, not whichever deal was updated last.
      */
-    fun recordBoundReview(): String {
-        val snapshot = signingSnapshot() ?: throw DealStateException("The proposal is missing.")
+    fun recordBoundReview(dealId: String): String {
+        val snapshot = requireBound(dealId)
         val view = (snapshot.document as? DealDocumentResult.Ready)?.view
             ?: throw DealStateException("The agreement could not be displayed.")
         if (view.hiddenCharacters.isNotEmpty()) {
             throw DealStateException("The agreement contains invisible or text-direction characters.")
         }
-        val (service, _) = acting(snapshot.dealId)
-        return service.recordOwnReview(snapshot.dealId, view.versionId, view.documentHash)
+        val (service, _) = acting(dealId)
+        return service.recordOwnReview(dealId, view.versionId, view.documentHash)
     }
 
-    suspend fun signBoundDeal(): String = sendBound { service, dealId -> service.queueOwnSignature(dealId) }
+    suspend fun signBoundDeal(dealId: String): String =
+        sendBound(dealId) { service, id -> service.queueOwnSignature(id) }
 
-    suspend fun confirmBoundClosure(): String = sendBound { service, dealId -> service.queueOwnClosure(dealId) }
+    suspend fun confirmBoundClosure(dealId: String): String =
+        sendBound(dealId) { service, id -> service.queueOwnClosure(id) }
 
-    suspend fun reviseBoundDeal(terms: String): String =
-        sendBound { service, dealId -> service.queueSigningRevision(dealId, terms) }
+    suspend fun reviseBoundDeal(dealId: String, terms: String): String =
+        sendBound(dealId) { service, id -> service.queueSigningRevision(id, terms) }
 
-    suspend fun rejectBoundDeal(note: String): String =
-        sendBound { service, dealId -> service.queueSigningRejection(dealId, note) }
+    suspend fun rejectBoundDeal(dealId: String, note: String): String =
+        sendBound(dealId) { service, id -> service.queueSigningRejection(id, note) }
 
     /** Test and recovery entry for one already authenticated plaintext envelope. */
     internal suspend fun acceptEnvelope(plain: ByteArray) {
@@ -189,17 +193,29 @@ class DealChatBridge(
     }
 
     private suspend fun sendBound(
+        dealId: String,
         block: (DealTransportService, String) -> DealTransportResult,
     ): String {
-        val dealId = boundDealId()
+        requireBound(dealId)
         val (service, conversationId) = acting(dealId)
         val result = block(service, dealId)
         deliver(service, conversationId)
         return result.envelopeId
     }
 
-    private fun boundDealId(): String =
-        signingSnapshot()?.dealId ?: throw DealStateException("The proposal is missing.")
+    /** Rejects an id that is not an agreement between this phone and this contact. */
+    private fun requireBound(dealId: String): DealSigningSnapshot {
+        DealIds.require(dealId)
+        val snapshot = DealSigningLookup.findById(
+            database,
+            protector,
+            local.messagingPublicKey,
+            peerParticipant.messagingPublicKey,
+            dealId,
+        ) ?: throw DealStateException("The proposal is missing.")
+        if (snapshot.dealId != dealId) throw DealStateException("The proposal is missing.")
+        return snapshot
+    }
 
     private fun acting(dealId: String): Pair<DealTransportService, String> {
         val parties = database.dealDao().parties(dealId)

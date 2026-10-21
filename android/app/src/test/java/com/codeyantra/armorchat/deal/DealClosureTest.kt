@@ -46,6 +46,7 @@ import com.codeyantra.armorchat.deal.transport.DealEnvelope
 import com.codeyantra.armorchat.deal.transport.DealEnvelopes
 import com.codeyantra.armorchat.deal.transport.DealMessagingSession
 import com.codeyantra.armorchat.deal.transport.DealSigningLookup
+import com.codeyantra.armorchat.deal.transport.agreementChoiceLabel
 import com.codeyantra.armorchat.deal.transport.DealTransportService
 import com.codeyantra.armorchat.deal.transport.DealTransportState
 import com.codeyantra.armorchat.deal.transport.DealWireEvent
@@ -59,6 +60,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -531,6 +533,93 @@ class DealClosureTest {
     }
 
     @Test
+    fun closingOneAgreementLeavesTheOtherOpen() {
+        val name = "closure-two-${UUID.randomUUID()}.db"
+        context.deleteDatabase(name)
+        val clock = Clock()
+        val first = bound()
+        val second = another(first, "e".repeat(22), "f".repeat(22))
+        val seed = ByteArray(32) { 9 }
+        val db = DealDatabase.builder(context, name).allowMainThreadQueries().build()
+        try {
+            val protector = SoftwareDealKeyProtector(seed)
+            val store = persist(db, first, DealStatus.FULLY_SIGNED, clock, protector)
+            clock.now = 200L
+            persist(db, second, DealStatus.FULLY_SIGNED, clock, protector)
+            val listed = DealSigningLookup.list(
+                db, protector, first.buyerMessagingPublic, first.supplierMessagingPublic,
+            )
+            assertEquals(listOf(second.deal.dealId, first.deal.dealId), listed.map { it.dealId })
+            assertEquals(
+                second.deal.dealId,
+                DealSigningLookup.find(db, protector, first.buyerMessagingPublic, first.supplierMessagingPublic)!!.dealId,
+            )
+            assertEquals(
+                first.deal.dealId,
+                DealSigningLookup.findById(
+                    db, protector, first.buyerMessagingPublic, first.supplierMessagingPublic, first.deal.dealId,
+                )!!.dealId,
+            )
+            assertNull(
+                DealSigningLookup.findById(
+                    db, protector, first.buyerMessagingPublic, first.supplierMessagingPublic, "z".repeat(22),
+                ),
+            )
+            val label = listed.first().agreementChoiceLabel()
+            assertTrue(label.startsWith("Agreement ${second.deal.dealId.takeLast(6)}"))
+            assertFalse(label.contains(TERMS))
+            assertFalse(label.contains(LEGAL_SUPPLIER))
+            assertFalse(label.contains(LEGAL_BUYER))
+            assertFalse(listed.first().toString().contains(TERMS))
+
+            clock.now = 300L
+            store.admit(first.deal, DealClosure.sign(first.deal, first.buyerId, first.buyerKeys.signingHandle()))
+            store.admit(first.deal, DealClosure.sign(first.deal, first.supplierId, first.supplierKeys.signingHandle()))
+            assertEquals(DealStatus.CLOSED.name, db.dealDao().findDeal(first.deal.dealId)!!.status)
+            assertEquals(DealStatus.FULLY_SIGNED.name, db.dealDao().findDeal(second.deal.dealId)!!.status)
+            assertEquals(
+                first.deal.dealId,
+                DealSigningLookup.find(db, protector, first.buyerMessagingPublic, first.supplierMessagingPublic)!!.dealId,
+            )
+            val closed = DealSigningLookup.findById(
+                db, protector, first.buyerMessagingPublic, first.supplierMessagingPublic, first.deal.dealId,
+            )!!
+            val stillOpen = DealSigningLookup.findById(
+                db, protector, first.buyerMessagingPublic, first.supplierMessagingPublic, second.deal.dealId,
+            )!!
+            assertEquals("Closed. Both confirmations are recorded.", closed.closureHeadline)
+            assertFalse(closed.canConfirmClosure)
+            assertEquals("Open. Neither party has confirmed closure.", stillOpen.closureHeadline)
+            assertTrue(stillOpen.canConfirmClosure)
+            assertFalse(stillOpen.buyerConfirmed)
+            assertFalse(stillOpen.supplierConfirmed)
+            assertEquals(0, db.dealDao().closureCountForDeal(second.deal.dealId))
+            db.close()
+
+            val reopened = DealDatabase.builder(context, name).allowMainThreadQueries().build()
+            try {
+                val again = SoftwareDealKeyProtector(seed.copyOf())
+                assertEquals(DealStatus.CLOSED.name, reopened.dealDao().findDeal(first.deal.dealId)!!.status)
+                assertEquals(DealStatus.FULLY_SIGNED.name, reopened.dealDao().findDeal(second.deal.dealId)!!.status)
+                val openAgain = DealSigningLookup.findById(
+                    reopened, again, first.buyerMessagingPublic, first.supplierMessagingPublic, second.deal.dealId,
+                )!!
+                assertEquals("Open. Neither party has confirmed closure.", openAgain.closureHeadline)
+                assertEquals(
+                    listOf(first.deal.dealId, second.deal.dealId),
+                    DealSigningLookup.list(
+                        reopened, again, first.buyerMessagingPublic, first.supplierMessagingPublic,
+                    ).map { it.dealId },
+                )
+            } finally {
+                reopened.close()
+            }
+        } finally {
+            context.deleteDatabase(name)
+        }
+    }
+
+    @Test
     fun unboundSignedRolesStayOpenInTheSnapshot() {
         val clock = Clock()
         val bound = bound(proposerRole = "Client", counterpartyRole = "Provider")
@@ -732,6 +821,78 @@ class DealClosureTest {
         private fun messaging(): KeysetHandle {
             DealTink.register()
             return KeysetHandle.generateNew(KeyTemplates.get("ED25519"))
+        }
+
+        private fun another(base: Bound, dealId: String, versionId: String): Bound {
+            var deal = DealIdentity.assemble(
+                dealId = dealId,
+                versionId = versionId,
+                parentVersionId = null,
+                createdAtEpochMs = 1_700_000_000_000L,
+                currency = "INR",
+                amountMinor = 100L,
+                terms = TERMS,
+                details = AgreementDetails(
+                    title = "Mutual closure",
+                    deadlineDate = "2026-12-31",
+                    paymentConditions = "",
+                    proposerRole = "Supplier",
+                    counterpartyRole = "Buyer",
+                ),
+                ancestry = emptyList(),
+                drafts = listOf(
+                    DealPartyDraft(
+                        partyId = base.supplierId,
+                        role = PartyRole.PROPOSER,
+                        label = "Side A",
+                        participant = base.supplierParticipant,
+                        signingPublicKey = base.supplierKeys.signingPublic,
+                        encryptionPublicKey = base.supplierKeys.encryptionPublic,
+                    ),
+                    DealPartyDraft(
+                        partyId = base.buyerId,
+                        role = PartyRole.COUNTERPARTY,
+                        label = "Side B",
+                        participant = base.buyerParticipant,
+                        signingPublicKey = base.buyerKeys.signingPublic,
+                        encryptionPublicKey = base.buyerKeys.encryptionPublic,
+                    ),
+                ),
+                annex = ContractAnnex(purpose = PURPOSE, effectiveDate = null),
+            )
+            deal = DealIdentity.authorizeOwnBinding(deal, base.supplierId, base.supplierSigner, 0, DealStatus.DRAFT)
+            deal = DealIdentity.authorizeOwnBinding(deal, base.buyerId, base.buyerSigner, 0, DealStatus.DRAFT)
+            deal = DealIdentity.confirmOwnLegalName(deal, base.supplierId, base.supplierSigner, LEGAL_SUPPLIER, 0, DealStatus.DRAFT)
+            deal = DealIdentity.confirmOwnLegalName(deal, base.buyerId, base.buyerSigner, LEGAL_BUYER, 0, DealStatus.DRAFT)
+            val signatures = listOf(
+                DealSignatures.sign(base.supplierKeys.signingHandle(), deal, base.supplierId, SignAction.SIGN),
+                DealSignatures.sign(base.buyerKeys.signingHandle(), deal, base.buyerId, SignAction.SIGN),
+            )
+            val sealed = DealCipher.encrypt(
+                dealId = deal.dealId,
+                versionId = deal.versionId,
+                canonical = deal.canonicalBytes(),
+                recipients = listOf(
+                    PartyWrapTarget(base.supplierId, base.supplierKeys.encryptionPublicHandle()),
+                    PartyWrapTarget(base.buyerId, base.buyerKeys.encryptionPublicHandle()),
+                ),
+            )
+            return Bound(
+                deal = deal,
+                supplierId = base.supplierId,
+                buyerId = base.buyerId,
+                supplierKeys = base.supplierKeys,
+                buyerKeys = base.buyerKeys,
+                supplierParticipant = base.supplierParticipant,
+                buyerParticipant = base.buyerParticipant,
+                supplierSigner = base.supplierSigner,
+                buyerSigner = base.buyerSigner,
+                supplierMessagingPublic = base.supplierMessagingPublic,
+                buyerMessagingPublic = base.buyerMessagingPublic,
+                signatures = signatures,
+                sealed = sealed,
+                bothSignatures = true,
+            )
         }
 
         private fun bound(

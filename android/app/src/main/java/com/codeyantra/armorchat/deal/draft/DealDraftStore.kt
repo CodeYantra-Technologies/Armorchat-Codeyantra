@@ -90,8 +90,9 @@ class SendableDraft(
  * Encrypts one chat-origin draft into armorchat-deal.db.
  *
  * The draft table is not deal version history. Updates replace ciphertext in
- * the same row. Cancellation changes only that row's status. A deal id that
- * already has a deal, version, or signature row is left untouched.
+ * the same unsent row. Cancellation changes only that row's status. A deal id
+ * that already has a stored record is left untouched. A conversation may hold
+ * several drafts when each earlier draft is tied to its own submitted Deal.
  */
 class DealDraftStore(
     private val database: DealDatabase,
@@ -116,7 +117,7 @@ class DealDraftStore(
         if (!typedPartyBId.isNullOrBlank()) {
             throw DealFormatException("A typed Party B id is not the conversation contact.")
         }
-        if (conversation != null && dao.activeDrafts(conversation.id).isNotEmpty()) {
+        if (conversation != null && unsentRow(conversation.id) != null) {
             throw DealStateException("This conversation already has a local draft.")
         }
         val allocated = ids ?: freshIds()
@@ -153,7 +154,7 @@ class DealDraftStore(
                 if (dao.findDraft(draftId) != null || dao.findDraftByDealId(allocated.dealId) != null) {
                     throw DealStateException("A local draft cannot replace a stored agreement.")
                 }
-                if (dao.activeDrafts(pending.origin.conversationId).isNotEmpty()) {
+                if (unsentRow(pending.origin.conversationId) != null) {
                     throw DealStateException("This conversation already has a local draft.")
                 }
                 try {
@@ -194,6 +195,9 @@ class DealDraftStore(
             val row = dao.findDraft(draftId) ?: throw DealStateException("The local draft is missing.")
             if (row.status != DealDrafts.STATUS_LOCAL) {
                 throw DealStateException("A cancelled draft cannot be edited.")
+            }
+            if (hasProgress(row.dealId)) {
+                throw DealStateException("A sent agreement cannot be replaced by a draft.")
             }
             refuseStoredAgreement(row.dealId)
             val loaded = load(row)
@@ -242,11 +246,28 @@ class DealDraftStore(
         return load(row).opened
     }
 
-    fun active(conversationId: String): OpenedLocalDraft? {
+    /** The newest draft that has no stored record for its own Deal ID. */
+    fun unsent(conversationId: String): OpenedLocalDraft? {
         requireGate()
-        val row = dao.activeDrafts(conversationId).firstOrNull() ?: return null
+        val row = unsentRow(conversationId) ?: return null
         return open(row.draftId)
     }
+
+    /**
+     * Submitted drafts whose Deal row is not stored yet.
+     * The ids are opaque. This does not open the sealed draft.
+     */
+    fun pendingSentDealIds(conversationId: String): List<String> {
+        requireGate()
+        return dao.activeDrafts(conversationId)
+            .asSequence()
+            .filter { hasProgress(it.dealId) && dao.findDeal(it.dealId) == null }
+            .map { it.dealId }
+            .distinct()
+            .toList()
+    }
+
+    fun active(conversationId: String): OpenedLocalDraft? = unsent(conversationId)
 
     /** Writes the current editor before the screen closes. Does not send. */
     fun persistBeforeLeave(
@@ -259,7 +280,7 @@ class DealDraftStore(
         typedPartyBId: String? = null,
     ): OpenedLocalDraft {
         requireGate()
-        val existing = conversation?.let { dao.activeDrafts(it.id).firstOrNull() }
+        val existing = conversation?.let { unsentRow(it.id) }
         return if (existing == null) {
             createFromChat(local, conversation, contact, editor, localDealKeys, localSigner, typedPartyBId)
         } else {
@@ -337,6 +358,17 @@ class DealDraftStore(
             throw DealStateException("A local draft cannot replace a stored agreement.")
         }
     }
+
+    /** Progress is counted only for this Deal ID, never for another Deal in the conversation. */
+    private fun hasProgress(dealId: String): Boolean =
+        dao.findDeal(dealId) != null ||
+            dao.versionCount(dealId) > 0 ||
+            dao.signatureCount(dealId) > 0 ||
+            dao.transportCountForDeal(dealId) > 0 ||
+            dao.closureCountForDeal(dealId) > 0
+
+    private fun unsentRow(conversationId: String): DealDraftRow? =
+        dao.activeDrafts(conversationId).firstOrNull { !hasProgress(it.dealId) }
 
     private fun load(row: DealDraftRow): LoadedDraft {
         if (row.status != DealDrafts.STATUS_LOCAL && row.status != DealDrafts.STATUS_CANCELLED) {

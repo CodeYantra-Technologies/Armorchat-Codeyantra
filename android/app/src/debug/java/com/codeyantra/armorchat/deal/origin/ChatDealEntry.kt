@@ -76,6 +76,7 @@ import com.codeyantra.armorchat.deal.draft.OpenedLocalDraft
 import com.codeyantra.armorchat.deal.storage.DealDatabase
 import com.codeyantra.armorchat.deal.transport.DealSigningSnapshot
 import com.codeyantra.armorchat.deal.transport.DealSigningLookup
+import com.codeyantra.armorchat.deal.transport.agreementChoiceLabel
 import com.codeyantra.armorchat.domain.identity.Base64Url
 import com.codeyantra.armorchat.domain.repository.SendTextResult
 import com.codeyantra.armorchat.messaging.ChatMessagingService
@@ -217,10 +218,49 @@ private fun ChatDealDraftScreen(
             Spacer(Modifier.height(12.dp))
             Text(state.partyALine, style = MaterialTheme.typography.bodyMedium)
             Text(state.partyBLine, style = MaterialTheme.typography.bodyMedium)
-            state.signing?.let { signing ->
-                SigningPanel(signing, state, model)
+            val browsing = !state.composingNew && !state.resumingDraft
+            val showEditor = state.composingNew || state.resumingDraft ||
+                (state.signing == null && state.agreements.isEmpty() &&
+                    state.pendingSentDealIds.isEmpty() && state.unsentDealId == null)
+            if (state.agreements.isNotEmpty() || state.pendingSentDealIds.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                Text("Agreements with this contact", style = MaterialTheme.typography.titleSmall)
+                state.agreements.forEach { agreement ->
+                    val selected = browsing && agreement.dealId == state.selectedDealId
+                    TextButton(
+                        onClick = { model.selectAgreement(agreement.dealId) },
+                        enabled = browsing,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text((if (selected) "Selected. " else "") + agreement.agreementChoiceLabel())
+                    }
+                }
+                state.pendingSentDealIds.forEach { dealId ->
+                    Text(
+                        "Agreement ${dealId.takeLast(6)}. Proposal sent. Waiting for the other party.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
             }
-            if (state.signing != null) {
+            if (browsing && state.unsentDealId != null) {
+                Spacer(Modifier.height(8.dp))
+                Button(onClick = { model.resumeUnsent() }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Resume unsent draft")
+                }
+            } else if (browsing && (state.agreements.isNotEmpty() || state.pendingSentDealIds.isNotEmpty())) {
+                Spacer(Modifier.height(8.dp))
+                Button(onClick = { model.startAnother() }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Start another agreement")
+                }
+            }
+            if (browsing) {
+                state.signing?.let { signing ->
+                    SigningPanel(signing, state, model)
+                }
+            }
+            if (browsing && state.signing != null) {
                 state.notice?.let { notice ->
                     Text(text = notice, color = colors.error, modifier = Modifier.padding(top = 8.dp))
                 }
@@ -230,7 +270,22 @@ private fun ChatDealDraftScreen(
                 TextButton(onClick = onLeaveWithoutSaving, modifier = Modifier.fillMaxWidth()) {
                     Text("Leave")
                 }
+            }
+            if (!showEditor) {
+                if (state.signing == null) {
+                    state.notice?.let { notice ->
+                        Text(text = notice, color = colors.error, modifier = Modifier.padding(top = 8.dp))
+                    }
+                    TextButton(onClick = onLeaveWithoutSaving, modifier = Modifier.fillMaxWidth()) {
+                        Text("Leave")
+                    }
+                }
                 return@Column
+            }
+            if (!browsing) {
+                TextButton(onClick = { model.backToSelected() }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Back to the selected agreement")
+                }
             }
             Text(
                 "Contractual roles are not Party A or Party B. A legal name in the draft is not a signature.",
@@ -343,7 +398,7 @@ private fun SigningPanel(
         val closureKind = signing.localClosureKind
         if (signing.canConfirmClosure && closureKind != null) {
             Spacer(Modifier.height(8.dp))
-            Button(onClick = { model.confirmClosure() }, modifier = Modifier.fillMaxWidth()) {
+            Button(onClick = { model.confirmClosure(signing.dealId) }, modifier = Modifier.fillMaxWidth()) {
                 Text(DealClosure.confirmLabel(closureKind))
             }
         }
@@ -357,7 +412,7 @@ private fun SigningPanel(
     }
     if (signing.canReview && !signing.proven) {
         Spacer(Modifier.height(12.dp))
-        Button(onClick = { model.review() }, enabled = controls.review, modifier = Modifier.fillMaxWidth()) {
+        Button(onClick = { model.review(signing.dealId) }, enabled = controls.review, modifier = Modifier.fillMaxWidth()) {
             Text("I reviewed this proposal")
         }
     }
@@ -370,7 +425,7 @@ private fun SigningPanel(
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(8.dp))
-        Button(onClick = { model.confirmName() }, enabled = controls.confirmName, modifier = Modifier.fillMaxWidth()) {
+        Button(onClick = { model.confirmName(signing.dealId) }, enabled = controls.confirmName, modifier = Modifier.fillMaxWidth()) {
             Text("Confirm my legal name")
         }
     }
@@ -394,7 +449,7 @@ private fun SigningPanel(
             confirmButton = {
                 Button(onClick = {
                     model.openSignConfirm(false)
-                    model.sign()
+                    model.sign(signing.dealId)
                 }) { Text("Sign this version") }
             },
             dismissButton = {
@@ -411,13 +466,13 @@ private fun SigningPanel(
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(8.dp))
-        OutlinedButton(onClick = { model.revise() }, modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = { model.revise(signing.dealId) }, modifier = Modifier.fillMaxWidth()) {
             Text("Send a new unsigned version")
         }
     }
     if (controls.reject) {
         Spacer(Modifier.height(24.dp))
-        OutlinedButton(onClick = { model.reject() }, modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(onClick = { model.reject(signing.dealId) }, modifier = Modifier.fillMaxWidth()) {
             Text("Reject this agreement")
         }
     }
@@ -491,7 +546,7 @@ private fun DocumentViewerDialog(
                             }
                             Spacer(Modifier.height(8.dp))
                             Button(
-                                onClick = { model.recordReview() },
+                                onClick = { model.recordReview(signing.dealId) },
                                 enabled = block == DealConsentBlock.NONE,
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
@@ -542,6 +597,13 @@ private data class DraftScreenState(
     val effectiveDate: String = "",
     val partyALegalName: String = "",
     val signing: DealSigningSnapshot? = null,
+    val agreements: List<DealSigningSnapshot> = emptyList(),
+    val selectedDealId: String? = null,
+    val composingNew: Boolean = false,
+    val resumingDraft: Boolean = false,
+    val unsentDealId: String? = null,
+    val pendingSentDealIds: List<String> = emptyList(),
+    val editorEpoch: Int = 0,
     val confirmName: String = "",
     val revisionTerms: String = "",
     val consent: DealConsentChecklist = DealConsentChecklist(),
@@ -611,35 +673,144 @@ private class ChatDealDraftModel(
     fun onRevisionTerms(value: String) = edit { it.copy(revisionTerms = value) }
 
     fun refreshSigning() {
-        viewModelScope.launch(Dispatchers.IO) { reloadSigning() }
+        viewModelScope.launch(Dispatchers.IO) { publishAgreements() }
     }
 
-    fun sendProposal() {
-        val draftId = stateFlow.value.draftId ?: return
+    fun selectAgreement(dealId: String) {
+        val identity = local ?: return
+        val person = contact ?: return
+        stateFlow.update { current ->
+            if (current.composingNew || current.resumingDraft) return@update current
+            val chosen = current.agreements.firstOrNull { it.dealId == dealId } ?: return@update current
+            current.copy(
+                selectedDealId = chosen.dealId,
+                signing = chosen,
+                publicStatus = chosen.stage.name,
+                notice = null,
+                viewerOpen = false,
+                signConfirmOpen = false,
+                consent = DealConsentChecklist(),
+                editorEpoch = current.editorEpoch + 1,
+            ).withPinnedParties(chosen, identity, person)
+        }
+    }
+
+    fun startAnother() {
+        val identity = local ?: return
+        val person = contact ?: return
+        stateFlow.update { current ->
+            if (current.unsentDealId != null || current.composingNew || current.resumingDraft) return@update current
+            if (current.agreements.isEmpty() && current.pendingSentDealIds.isEmpty()) return@update current
+            blankParties(identity, person).copy(
+                agreements = current.agreements,
+                selectedDealId = current.selectedDealId,
+                signing = current.signing,
+                pendingSentDealIds = current.pendingSentDealIds,
+                unsentDealId = current.unsentDealId,
+                composingNew = true,
+                resumingDraft = false,
+                editorEpoch = current.editorEpoch + 1,
+                publicStatus = DealDrafts.PUBLIC_LOCAL,
+                notice = null,
+            ).withPinnedParties(current.signing, identity, person)
+        }
+    }
+
+    fun resumeUnsent() {
         viewModelScope.launch(Dispatchers.IO) {
-            if (!persistOnLeave()) return@launch
-            val id = stateFlow.value.draftId ?: draftId
-            act("The proposal was not sent.") {
-                entry.messaging().sendDealDraft(conversationId, id)
+            val opened = try {
+                store.unsent(conversationId)
+            } catch (e: DealException) {
+                stateFlow.update { it.copy(notice = e.message) }
+                return@launch
+            }
+            if (opened == null) {
+                publishAgreements()
+                return@launch
+            }
+            stateFlow.update { current ->
+                if (current.composingNew) return@update current
+                opened.toState(current).copy(
+                    resumingDraft = true,
+                    composingNew = false,
+                    unsentDealId = opened.ids.dealId,
+                    editorEpoch = current.editorEpoch + 1,
+                    agreements = current.agreements,
+                    selectedDealId = current.selectedDealId,
+                    signing = current.signing,
+                    pendingSentDealIds = current.pendingSentDealIds,
+                    notice = null,
+                    viewerOpen = false,
+                    signConfirmOpen = false,
+                )
             }
         }
     }
 
-    fun review() = act("The review was not sent.") { entry.messaging().reviewDeal(conversationId) }
+    fun backToSelected() {
+        val identity = local
+        val person = contact
+        stateFlow.update { current ->
+            val cleared = current.clearedEditor(current.editorEpoch + 1).copy(notice = null)
+            if (identity == null || person == null) cleared
+            else cleared.withPinnedParties(cleared.signing, identity, person)
+        }
+    }
 
-    fun confirmName() {
+    fun sendProposal() {
+        val snapshot = stateFlow.value
+        if (!snapshot.composingNew && !snapshot.resumingDraft &&
+            (snapshot.agreements.isNotEmpty() || snapshot.pendingSentDealIds.isNotEmpty() || snapshot.unsentDealId != null)
+        ) {
+            return
+        }
+        val epoch = snapshot.editorEpoch
+        viewModelScope.launch(Dispatchers.IO) {
+            if (stateFlow.value.editorEpoch != epoch) return@launch
+            if (!persistOnLeave()) return@launch
+            val after = stateFlow.value
+            if (after.editorEpoch != epoch) return@launch
+            val id = after.draftId ?: return@launch
+            val result = try {
+                entry.messaging().sendDealDraft(conversationId, id)
+            } catch (e: DealException) {
+                stateFlow.update { current ->
+                    if (current.editorEpoch != epoch) current else current.copy(notice = "The proposal was not sent.")
+                }
+                return@launch
+            }
+            val failure = result !is SendTextResult.Queued
+            stateFlow.update { current ->
+                if (current.editorEpoch != epoch) return@update current
+                if (failure) return@update current.copy(notice = "The proposal was not sent.")
+                current.clearedEditor(current.editorEpoch + 1).copy(notice = null)
+            }
+            if (stateFlow.value.editorEpoch != epoch) publishAgreements()
+        }
+    }
+
+    fun review(shownDealId: String) = act(shownDealId, "The review was not sent.") { dealId ->
+        entry.messaging().reviewDeal(conversationId, dealId)
+    }
+
+    fun confirmName(shownDealId: String) {
+        if (capturedDeal(shownDealId) == null) return
         val name = stateFlow.value.confirmName.trim()
         if (name.isEmpty()) {
             stateFlow.update { it.copy(notice = "Enter your own legal name.") }
             return
         }
-        act("The name confirmation was not sent.") { entry.messaging().confirmDealName(conversationId, name) }
+        act(shownDealId, "The name confirmation was not sent.") { dealId ->
+            entry.messaging().confirmDealName(conversationId, dealId, name)
+        }
     }
 
-    fun sign() = act("The signature was not sent.") { entry.messaging().signDeal(conversationId) }
+    fun sign(shownDealId: String) = act(shownDealId, "The signature was not sent.") { dealId ->
+        entry.messaging().signDeal(conversationId, dealId)
+    }
 
-    fun confirmClosure() = act("The confirmation was not sent.") {
-        entry.messaging().confirmDealClosure(conversationId)
+    fun confirmClosure(shownDealId: String) = act(shownDealId, "The confirmation was not sent.") { dealId ->
+        entry.messaging().confirmDealClosure(conversationId, dealId)
     }
 
     fun openViewer(open: Boolean) = stateFlow.update { it.copy(viewerOpen = open) }
@@ -652,33 +823,51 @@ private class ChatDealDraftModel(
     }
 
     /** Records consent only after the explicit action, a rendered document and a ticked box for this exact version. */
-    fun recordReview() {
+    fun recordReview(shownDealId: String) {
         val current = stateFlow.value
         val signing = current.signing ?: return
+        if (current.selectedDealId != shownDealId || signing.dealId != shownDealId) {
+            stateFlow.update { it.copy(notice = "The selected agreement changed.") }
+            return
+        }
         val viewer = DealDocumentPresenter.present(signing)
         if (DealConsentGate.block(viewer, current.consent, signing.ownReviewConsent, signing.proven) != DealConsentBlock.NONE) {
             stateFlow.update { it.copy(notice = "Read the complete agreement and tick the box for this exact version first.") }
             return
         }
-        act("The review consent was not recorded.") { entry.messaging().recordDealReview(conversationId) }
+        act(shownDealId, "The review consent was not recorded.") { dealId ->
+            entry.messaging().recordDealReview(conversationId, dealId)
+        }
     }
 
-    fun revise() {
+    fun revise(shownDealId: String) {
+        if (capturedDeal(shownDealId) == null) return
         val terms = stateFlow.value.revisionTerms
         if (terms.isBlank()) {
             stateFlow.update { it.copy(notice = "Enter the revised terms.") }
             return
         }
-        act("The revision was not sent.") { entry.messaging().reviseDeal(conversationId, terms) }
+        act(shownDealId, "The revision was not sent.") { dealId ->
+            entry.messaging().reviseDeal(conversationId, dealId, terms)
+        }
     }
 
-    fun reject() = act("The rejection was not sent.") { entry.messaging().rejectDeal(conversationId, "Declined.") }
+    fun reject(shownDealId: String) = act(shownDealId, "The rejection was not sent.") { dealId ->
+        entry.messaging().rejectDeal(conversationId, dealId, "Declined.")
+    }
 
     /** Saves a valid editor. Returns false when the current text must stay on screen. */
     fun persistOnLeave(): Boolean {
         val snapshot = stateFlow.value
-        if (snapshot.signing != null) return true
         if (snapshot.loading || snapshot.missing != null) return true
+        val editing = snapshot.composingNew || snapshot.resumingDraft
+        if (!editing && (
+                snapshot.signing != null || snapshot.agreements.isNotEmpty() ||
+                    snapshot.pendingSentDealIds.isNotEmpty() || snapshot.unsentDealId != null
+                )
+        ) {
+            return true
+        }
         val editor = try {
             snapshot.editor()
         } catch (e: DealFormatException) {
@@ -702,7 +891,9 @@ private class ChatDealDraftModel(
             } else {
                 store.update(snapshot.draftId, editor, identity, chat, person)
             }
-            stateFlow.value = opened.toState(snapshot)
+            stateFlow.update { current ->
+                if (current.editorEpoch != snapshot.editorEpoch) current else opened.toState(current)
+            }
             true
         } catch (e: DealException) {
             stateFlow.update { it.copy(notice = e.message) }
@@ -739,10 +930,27 @@ private class ChatDealDraftModel(
             local = identity
             conversation = chat
             contact = person
-            val opened = store.active(chat.id)
-            val base = opened?.toState(blankParties(identity, person)) ?: blankParties(identity, person)
-            val signing = lookupSigning(identity, person)
-            stateFlow.value = base.withPinnedParties(signing, identity, person).copy(signing = signing)
+            val agreements = listSigning(identity, person)
+            val unsent = store.unsent(chat.id)
+            val pending = store.pendingSentDealIds(chat.id)
+            stateFlow.value = if (unsent != null && agreements.isEmpty() && pending.isEmpty()) {
+                unsent.toState(blankParties(identity, person)).copy(
+                    resumingDraft = true,
+                    unsentDealId = unsent.ids.dealId,
+                    agreements = agreements,
+                    pendingSentDealIds = pending,
+                )
+            } else {
+                val latest = agreements.firstOrNull()
+                blankParties(identity, person).copy(
+                    agreements = agreements,
+                    selectedDealId = latest?.dealId,
+                    signing = latest,
+                    unsentDealId = unsent?.ids?.dealId,
+                    pendingSentDealIds = pending,
+                    publicStatus = latest?.stage?.name ?: DealDrafts.PUBLIC_LOCAL,
+                ).withPinnedParties(latest, identity, person)
+            }
         } catch (e: DealException) {
             stateFlow.value = DraftScreenState(loading = false, missing = e.message)
         }
@@ -758,44 +966,94 @@ private class ChatDealDraftModel(
         return KeystoreDealBindingSigner(entry.identityKeyStore(), publicKey)
     }
 
-    private fun act(failure: String, block: suspend () -> SendTextResult) {
+    private fun act(shownDealId: String, failure: String, block: suspend (String) -> SendTextResult) {
+        val dealId = capturedDeal(shownDealId) ?: return
+        val epoch = stateFlow.value.editorEpoch
         viewModelScope.launch(Dispatchers.IO) {
             val result = try {
-                block()
+                block(dealId)
             } catch (e: DealException) {
-                stateFlow.update { it.copy(notice = failure) }
+                publishAgreements(noticeForDeal = dealId, notice = failure, startedEpoch = epoch)
                 return@launch
             }
             val notice = when (result) {
                 is SendTextResult.Queued -> null
                 else -> failure
             }
-            reloadSigning()
-            stateFlow.update { it.copy(notice = notice) }
+            publishAgreements(noticeForDeal = dealId, notice = notice, startedEpoch = epoch)
         }
     }
 
-    private fun reloadSigning() {
+    /** Refreshes the list. An in-flight result is applied only while [noticeForDeal] is still selected. */
+    private fun publishAgreements(
+        noticeForDeal: String? = null,
+        notice: String? = null,
+        startedEpoch: Int? = null,
+    ) {
         val identity = local ?: return
         val person = contact ?: return
-        val signing = try {
-            lookupSigning(identity, person)
+        val agreements = try {
+            listSigning(identity, person)
         } catch (e: DealException) {
-            null
+            stateFlow.update { it.copy(notice = e.message) }
+            return
+        }
+        val unsentId = try {
+            store.unsent(conversationId)?.ids?.dealId
+        } catch (e: DealException) {
+            stateFlow.update { it.copy(notice = e.message) }
+            return
+        }
+        val pending = try {
+            store.pendingSentDealIds(conversationId)
+        } catch (e: DealException) {
+            stateFlow.update { it.copy(notice = e.message) }
+            return
         }
         stateFlow.update { current ->
-            current.withPinnedParties(signing, identity, person).copy(
-                signing = signing,
-                publicStatus = signing?.stage?.name ?: current.publicStatus,
-                consent = current.consent.forState(DealDocumentPresenter.present(signing)),
-            )
+            val editing = current.composingNew || current.resumingDraft
+            if (editing) {
+                return@update current.copy(
+                    agreements = agreements,
+                    unsentDealId = unsentId,
+                    pendingSentDealIds = pending,
+                )
+            }
+            val keep = current.selectedDealId?.let { id -> agreements.firstOrNull { it.dealId == id } }
+                ?: agreements.firstOrNull()
+            val showNotice = noticeForDeal != null &&
+                current.selectedDealId == noticeForDeal &&
+                (startedEpoch == null || current.editorEpoch == startedEpoch)
+            current.copy(
+                loading = false,
+                agreements = agreements,
+                selectedDealId = keep?.dealId,
+                signing = keep,
+                unsentDealId = unsentId,
+                pendingSentDealIds = pending,
+                publicStatus = keep?.stage?.name ?: current.publicStatus,
+                notice = if (showNotice) notice else current.notice,
+                consent = current.consent.forState(DealDocumentPresenter.present(keep)),
+            ).withPinnedParties(keep, identity, person)
         }
     }
 
-    private fun lookupSigning(identity: UserIdentity, person: Contact): DealSigningSnapshot? {
+    private fun capturedDeal(shownDealId: String): String? {
+        val current = stateFlow.value
+        if (current.composingNew || current.resumingDraft ||
+            current.selectedDealId != shownDealId ||
+            current.signing?.dealId != shownDealId
+        ) {
+            stateFlow.update { it.copy(notice = "The selected agreement changed.") }
+            return null
+        }
+        return shownDealId
+    }
+
+    private fun listSigning(identity: UserIdentity, person: Contact): List<DealSigningSnapshot> {
         val localKey = Base64Url.decode(identity.publicIdentityKey)
         val peerKey = Base64Url.decode(person.publicIdentityKey)
-        return DealSigningLookup.find(database, protector, localKey, peerKey)
+        return DealSigningLookup.list(database, protector, localKey, peerKey)
     }
 
     private fun edit(block: (DraftScreenState) -> DraftScreenState) {
@@ -823,13 +1081,12 @@ private fun blankParties(local: UserIdentity, contact: Contact) = DraftScreenSta
     publicStatus = DealDrafts.PUBLIC_LOCAL,
 )
 
-private fun OpenedLocalDraft.toState(previous: DraftScreenState): DraftScreenState = DraftScreenState(
+private fun OpenedLocalDraft.toState(previous: DraftScreenState): DraftScreenState = previous.copy(
     loading = false,
+    missing = null,
     publicStatus = publicStatus,
     status = status,
     draftId = draftId,
-    partyAName = previous.partyAName,
-    partyBName = previous.partyBName,
     partyALine = partyLine("Party A", previous.partyAName, origin.partyA.armorChatId),
     partyBLine = partyLine("Party B", previous.partyBName, origin.partyB.armorChatId),
     title = editor.title,
@@ -843,6 +1100,28 @@ private fun OpenedLocalDraft.toState(previous: DraftScreenState): DraftScreenSta
     deadlineDate = editor.deadlineDate,
     effectiveDate = editor.effectiveDate,
     partyALegalName = editor.partyALegalName,
+)
+
+private fun DraftScreenState.clearedEditor(epoch: Int): DraftScreenState = copy(
+    composingNew = false,
+    resumingDraft = false,
+    draftId = null,
+    status = null,
+    title = "",
+    purpose = "",
+    proposerRole = "",
+    counterpartyRole = "",
+    terms = "",
+    paymentConditions = "",
+    currency = "",
+    amountText = "",
+    deadlineDate = "",
+    effectiveDate = "",
+    partyALegalName = "",
+    editorEpoch = epoch,
+    viewerOpen = false,
+    signConfirmOpen = false,
+    publicStatus = signing?.stage?.name ?: DealDrafts.PUBLIC_LOCAL,
 )
 
 private fun partyLine(role: String, name: String, armorChatId: String): String =

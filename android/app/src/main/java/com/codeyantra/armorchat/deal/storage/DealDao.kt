@@ -129,6 +129,12 @@ interface DealDao {
     @Query("SELECT COUNT(*) FROM deal_transport")
     fun transportCount(): Int
 
+    @Query("SELECT COUNT(*) FROM deal_transport WHERE dealId = :dealId")
+    fun transportCountForDeal(dealId: String): Int
+
+    @Query("SELECT COUNT(*) FROM deal_closures WHERE dealId = :dealId")
+    fun closureCountForDeal(dealId: String): Int
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     fun insertClosure(row: DealClosureRow)
 

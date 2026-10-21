@@ -53,22 +53,46 @@ class DealSigningSnapshot(
     val supplierConfirmed: Boolean = false,
     val canConfirmClosure: Boolean = false,
     val localClosureKind: ClosureKind? = null,
+    val updatedAtEpochMs: Long = 0,
 ) {
     override fun toString(): String = "DealSigningSnapshot(stage=$stage, role=$role, proven=$proven)"
 }
 
+/** Selector text. It names the stage and a short id. It does not include terms or names. */
+fun DealSigningSnapshot.agreementChoiceLabel(): String {
+    val fingerprint = (document as? DealDocumentResult.Ready)?.view?.fingerprint ?: "not open"
+    return "Agreement ${dealId.takeLast(6)} · $stage · $fingerprint"
+}
+
 object DealSigningLookup {
+    /** Latest agreement between this phone and the contact. */
     fun find(
         database: DealDatabase,
         protector: DealKeyProtector,
         localMessagingKey: ByteArray,
         peerMessagingKey: ByteArray,
-    ): DealSigningSnapshot? {
+    ): DealSigningSnapshot? = list(database, protector, localMessagingKey, peerMessagingKey).firstOrNull()
+
+    /** One agreement between this phone and the contact. Null when the id is not theirs. */
+    fun findById(
+        database: DealDatabase,
+        protector: DealKeyProtector,
+        localMessagingKey: ByteArray,
+        peerMessagingKey: ByteArray,
+        dealId: String,
+    ): DealSigningSnapshot? =
+        list(database, protector, localMessagingKey, peerMessagingKey).firstOrNull { it.dealId == dealId }
+
+    /** Every agreement between this phone and the contact, newest first. */
+    fun list(
+        database: DealDatabase,
+        protector: DealKeyProtector,
+        localMessagingKey: ByteArray,
+        peerMessagingKey: ByteArray,
+    ): List<DealSigningSnapshot> {
         val dao = database.dealDao()
-        var best: DealSigningSnapshot? = null
-        var bestUpdated = Long.MIN_VALUE
+        val matches = ArrayList<DealSigningSnapshot>()
         for (row in dao.listDeals()) {
-            if (row.updatedAtEpochMs < bestUpdated) continue
             val parties = dao.parties(row.dealId)
             val localParty = parties.firstOrNull { dao.findKeys(it.partyId) != null } ?: continue
             val version = dao.findVersion(row.dealId, row.currentVersionId) ?: continue
@@ -115,7 +139,7 @@ object DealSigningLookup {
                 ClosureKind.PAYMENT_RECEIVED -> projection.supplierConfirmed
                 null -> false
             }
-            best = DealSigningSnapshot(
+            matches += DealSigningSnapshot(
                 dealId = deal.dealId,
                 versionId = deal.versionId,
                 stage = progress.stage,
@@ -147,10 +171,13 @@ object DealSigningLookup {
                 canConfirmClosure = closureStore.finalityProven(deal) && !integrityFailure && projection.rolesBound &&
                     localKind != null && !localConfirmed && projection.state != ClosureState.CLOSED,
                 localClosureKind = localKind,
+                updatedAtEpochMs = row.updatedAtEpochMs,
             )
-            bestUpdated = row.updatedAtEpochMs
         }
-        return best
+        matches.sortWith(
+            compareByDescending<DealSigningSnapshot> { it.updatedAtEpochMs }.thenByDescending { it.dealId },
+        )
+        return matches
     }
 
     private fun openKeys(

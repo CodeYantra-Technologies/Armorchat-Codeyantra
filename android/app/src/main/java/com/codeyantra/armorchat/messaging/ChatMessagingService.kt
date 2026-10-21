@@ -472,33 +472,33 @@ class ChatMessagingService @Inject constructor(
         }
     }
 
-    /** Party B reviews the current proposal. Debug builds only. No chat row is written. */
-    suspend fun reviewDeal(conversationId: String): SendTextResult =
-        dealSession(conversationId, "review") { it.reviewBoundDeal() }
+    /** Party B reviews the selected proposal. Debug builds only. No chat row is written. */
+    suspend fun reviewDeal(conversationId: String, dealId: String): SendTextResult =
+        dealSession(conversationId, "review") { it.reviewBoundDeal(dealId) }
 
-    /** Confirms this phone's own legal name for the current canonical version. */
-    suspend fun confirmDealName(conversationId: String, legalName: String): SendTextResult =
-        dealSession(conversationId, "confirm_name") { it.confirmBoundName(legalName) }
+    /** Confirms this phone's own legal name on the selected agreement. */
+    suspend fun confirmDealName(conversationId: String, dealId: String, legalName: String): SendTextResult =
+        dealSession(conversationId, "confirm_name") { it.confirmBoundName(dealId, legalName) }
 
-    /** Signs with this phone's deal key. The peer's private key is never used. */
-    suspend fun signDeal(conversationId: String): SendTextResult =
-        dealSession(conversationId, "sign") { it.signBoundDeal() }
+    /** Signs the selected agreement with this phone's deal key. The peer's private key is never used. */
+    suspend fun signDeal(conversationId: String, dealId: String): SendTextResult =
+        dealSession(conversationId, "sign") { it.signBoundDeal(dealId) }
 
-    /** Confirms this phone's own closure kind. Debug builds only. No chat row is written. */
-    suspend fun confirmDealClosure(conversationId: String): SendTextResult =
-        dealSession(conversationId, "closure") { it.confirmBoundClosure() }
+    /** Confirms this phone's own closure kind on the selected agreement. Debug builds only. */
+    suspend fun confirmDealClosure(conversationId: String, dealId: String): SendTextResult =
+        dealSession(conversationId, "closure") { it.confirmBoundClosure(dealId) }
 
-    /** Phase 5.4D: local review consent for the current complete document. Sends nothing. */
-    suspend fun recordDealReview(conversationId: String): SendTextResult =
-        dealSession(conversationId, "review_consent") { it.recordBoundReview() }
+    /** Local review consent for the selected agreement. Sends nothing. */
+    suspend fun recordDealReview(conversationId: String, dealId: String): SendTextResult =
+        dealSession(conversationId, "review_consent") { it.recordBoundReview(dealId) }
 
-    /** Party A replaces the terms with a new unsigned version. The old version stays. */
-    suspend fun reviseDeal(conversationId: String, terms: String): SendTextResult =
-        dealSession(conversationId, "revise") { it.reviseBoundDeal(terms) }
+    /** Party A replaces the terms of the selected agreement. The old version stays. */
+    suspend fun reviseDeal(conversationId: String, dealId: String, terms: String): SendTextResult =
+        dealSession(conversationId, "revise") { it.reviseBoundDeal(dealId, terms) }
 
-    /** Rejects the agreement until both SIGN signatures exist. */
-    suspend fun rejectDeal(conversationId: String, note: String): SendTextResult =
-        dealSession(conversationId, "reject") { it.rejectBoundDeal(note) }
+    /** Rejects the selected agreement until both SIGN signatures exist. */
+    suspend fun rejectDeal(conversationId: String, dealId: String, note: String): SendTextResult =
+        dealSession(conversationId, "reject") { it.rejectBoundDeal(dealId, note) }
 
     private suspend fun dealSession(
         conversationId: String,
