@@ -62,7 +62,7 @@ android {
         buildConfigField("String", "TRUST_LAYER", "\"Veltrix\"")
 
         ndk {
-            abiFilters.addAll(listOf("arm64-v8a", "x86_64", "armeabi-v7a"))
+            abiFilters.addAll(listOf("arm64-v8a"))
         }
     }
 
