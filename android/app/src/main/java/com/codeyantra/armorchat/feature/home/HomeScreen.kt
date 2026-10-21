@@ -48,6 +48,7 @@ fun HomeScreen(
     onNetworkPrivacy: () -> Unit,
     onEmergencyMesh: () -> Unit,
     onTwoPhoneTest: (() -> Unit)? = null,
+    onDealLab: (() -> Unit)? = null,
     onOpenConversation: (conversationId: String) -> Unit,
 ) {
     val context = LocalContext.current
@@ -120,6 +121,7 @@ fun HomeScreen(
                 onNetworkPrivacy = onNetworkPrivacy,
                 onEmergencyMesh = onEmergencyMesh,
                 onTwoPhoneTest = onTwoPhoneTest,
+                onDealLab = onDealLab,
             )
         }
     }

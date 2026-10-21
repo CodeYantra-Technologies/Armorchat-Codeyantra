@@ -81,6 +81,31 @@ class InnerRecordTest {
         assertThat(body.originalName).isEqualTo("photo.jpg")
     }
 
+    @Test
+    fun dealChunkRoundTripStaysOutOfThePreview() {
+        val marker = "UNIQUE_DEAL_CHUNK_MARKER"
+        val record = sampleText().copy(
+            kind = InnerKind.DEAL,
+            messageId = b16(12),
+            body = InnerBody.Deal(
+                protocol = 1,
+                envelopeId = b16(13),
+                chunkIndex = 0,
+                chunkCount = 1,
+                frameSha256 = b32(14),
+                chunk = Base64Url.encode(marker.toByteArray(Charsets.UTF_8)),
+            ),
+        )
+        assertThat(record.kind.isUserMessage).isFalse()
+        assertThat((record.body as InnerBody.Deal).toString()).isEqualTo("Deal")
+        assertThat(record.toString()).doesNotContain(marker)
+        val parsed = InnerRecord.parse(record.encode())
+        assertThat(parsed).isEqualTo(record)
+        val carried = Base64Url.decode((parsed.body as InnerBody.Deal).chunk)
+        assertThat(String(carried, Charsets.UTF_8)).isEqualTo(marker)
+        assertThat(parsed.toString()).doesNotContain(marker)
+    }
+
     private fun sampleText() = InnerRecord(
         kind = InnerKind.TEXT,
         messageId = b16(1),

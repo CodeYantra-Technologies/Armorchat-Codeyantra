@@ -1,5 +1,6 @@
 package com.codeyantra.armorchat.messaging
 
+import com.codeyantra.armorchat.BuildConfig
 import com.codeyantra.armorchat.core.blob.DownloadOutcome
 import com.codeyantra.armorchat.core.blob.LargeBlobPending
 import com.codeyantra.armorchat.core.blob.LargeBlobTransfer
@@ -26,6 +27,17 @@ import com.codeyantra.armorchat.core.network.RelayRegistry
 import com.codeyantra.armorchat.core.network.ServicePolicyController
 import com.codeyantra.armorchat.core.security.RelayCredentialsKek
 import com.codeyantra.armorchat.core.security.SecureIdentityKeyStore
+import com.codeyantra.armorchat.deal.crypto.AndroidKeystoreDealKeyProtector
+import com.codeyantra.armorchat.deal.domain.DealFormatException
+import com.codeyantra.armorchat.deal.domain.DealMessagingSigner
+import com.codeyantra.armorchat.deal.domain.VerifiedDealParticipant
+import com.codeyantra.armorchat.deal.draft.DealDraftStore
+import com.codeyantra.armorchat.deal.origin.ChatDealFactory
+import com.codeyantra.armorchat.deal.storage.DealDatabase
+import com.codeyantra.armorchat.deal.transport.ExportedSessionCipher
+import com.codeyantra.armorchat.domain.identity.Base64Url
+import com.codeyantra.armorchat.domain.model.Conversation
+import com.codeyantra.armorchat.domain.model.UserIdentity
 import com.codeyantra.armorchat.fcm.PushTokenRegistrar
 import com.codeyantra.armorchat.domain.model.Contact
 import com.codeyantra.armorchat.domain.model.MessageStatus
@@ -86,6 +98,7 @@ class ChatMessagingService @Inject constructor(
     private val keepAlive = CoroutineScope(SupervisorJob() + dispatchers.io)
     private val enabled = true
     private val contactPins = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val dealBridges = java.util.concurrent.ConcurrentHashMap<String, DealChatBridge>()
     private val largeBlobs by lazy {
         LargeBlobTransfer(
             context = context,
@@ -416,6 +429,110 @@ class ChatMessagingService @Inject constructor(
                 conversationDao.touch(conversationId, conversation.title, createdAt)
                 persist(contact)
                 SendTextResult.Queued(record.messageId, record.progress.status)
+            }
+        }
+    }
+
+    /**
+     * Sends one existing chat-origin draft. The terms stay inside the deal
+     * envelope. This does not insert a chat row, a notification, or an attachment.
+     */
+    suspend fun sendDealDraft(conversationId: String, draftId: String): SendTextResult {
+        if (!ChatDealFactory.enabled(BuildConfig.DEBUG) || !enabled) {
+            return SendTextResult.TransportUnavailable
+        }
+        return withContext(dispatchers.io) {
+            mutex.withLock {
+                val conversation = conversationRepository.getConversation(conversationId)
+                    ?: return@withLock SendTextResult.ConversationMissing
+                val contact = contactRepository.getContact(conversation.contactId)
+                    ?: return@withLock SendTextResult.ConversationMissing
+                val identity = identityRepository.getIdentity() ?: return@withLock SendTextResult.SessionNotReady
+                if (policy.blocksNetwork()) return@withLock SendTextResult.NetworkUnavailable
+                val view = orchestrator.sessionView(identity.publicIdentityKey, contact.publicIdentityKey)
+                if (!view.composerAllowed) return@withLock SendTextResult.SessionNotReady
+                val link = orchestrator.link(contact.publicIdentityKey) ?: return@withLock SendTextResult.SessionNotReady
+                if (!link.peer.sessionConfirmed) return@withLock SendTextResult.SessionNotReady
+                val bridge = dealBridge(identity, conversation, contact, link.receipts)
+                try {
+                    val id = bridge.sendDraft(draftId, identity, conversation, contact)
+                    SendTextResult.Queued(id, MessageStatus.SENT)
+                } catch (e: MessagingProtocolException) {
+                    if (e.message != "deal delivery waiting") return@withLock SendTextResult.SessionNotReady
+                    val id = bridge.existingProposalId(draftId, identity, conversation, contact)
+                        ?: return@withLock SendTextResult.SessionNotReady
+                    SendTextResult.Queued(id, MessageStatus.QUEUED)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    DealFailureLog.record("send_proposal", e)
+                    SendTextResult.SessionNotReady
+                }
+            }
+        }
+    }
+
+    /** Party B reviews the current proposal. Debug builds only. No chat row is written. */
+    suspend fun reviewDeal(conversationId: String): SendTextResult =
+        dealSession(conversationId, "review") { it.reviewBoundDeal() }
+
+    /** Confirms this phone's own legal name for the current canonical version. */
+    suspend fun confirmDealName(conversationId: String, legalName: String): SendTextResult =
+        dealSession(conversationId, "confirm_name") { it.confirmBoundName(legalName) }
+
+    /** Signs with this phone's deal key. The peer's private key is never used. */
+    suspend fun signDeal(conversationId: String): SendTextResult =
+        dealSession(conversationId, "sign") { it.signBoundDeal() }
+
+    /** Phase 5.4D: local review consent for the current complete document. Sends nothing. */
+    suspend fun recordDealReview(conversationId: String): SendTextResult =
+        dealSession(conversationId, "review_consent") { it.recordBoundReview() }
+
+    /** Party A replaces the terms with a new unsigned version. The old version stays. */
+    suspend fun reviseDeal(conversationId: String, terms: String): SendTextResult =
+        dealSession(conversationId, "revise") { it.reviseBoundDeal(terms) }
+
+    /** Rejects the agreement until both SIGN signatures exist. */
+    suspend fun rejectDeal(conversationId: String, note: String): SendTextResult =
+        dealSession(conversationId, "reject") { it.rejectBoundDeal(note) }
+
+    private suspend fun dealSession(
+        conversationId: String,
+        action: String,
+        block: suspend (DealChatBridge) -> String,
+    ): SendTextResult {
+        if (!ChatDealFactory.enabled(BuildConfig.DEBUG) || !enabled) {
+            return SendTextResult.TransportUnavailable
+        }
+        return withContext(dispatchers.io) {
+            mutex.withLock {
+                val conversation = conversationRepository.getConversation(conversationId)
+                    ?: return@withLock SendTextResult.ConversationMissing
+                val contact = contactRepository.getContact(conversation.contactId)
+                    ?: return@withLock SendTextResult.ConversationMissing
+                val identity = identityRepository.getIdentity() ?: return@withLock SendTextResult.SessionNotReady
+                if (policy.blocksNetwork()) return@withLock SendTextResult.NetworkUnavailable
+                val view = orchestrator.sessionView(identity.publicIdentityKey, contact.publicIdentityKey)
+                if (!view.composerAllowed) return@withLock SendTextResult.SessionNotReady
+                val link = orchestrator.link(contact.publicIdentityKey) ?: return@withLock SendTextResult.SessionNotReady
+                if (!link.peer.sessionConfirmed) return@withLock SendTextResult.SessionNotReady
+                val bridge = dealBridge(identity, conversation, contact, link.receipts)
+                try {
+                    val id = block(bridge)
+                    SendTextResult.Queued(id, MessageStatus.SENT)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: MessagingProtocolException) {
+                    if (e.message != "deal delivery waiting") {
+                        DealFailureLog.record(action, e)
+                        return@withLock SendTextResult.SessionNotReady
+                    }
+                    SendTextResult.Queued("deal", MessageStatus.QUEUED)
+                } catch (e: Exception) {
+                    // Sanitized: fixed code and simple class name only.
+                    DealFailureLog.record(action, e)
+                    SendTextResult.SessionNotReady
+                }
             }
         }
     }
@@ -964,7 +1081,11 @@ class ChatMessagingService @Inject constructor(
                 if (policy.blocksNetwork()) return@timedLock
                 val conversation = conversationRepository.getOrCreateForContact(contact)
                 orchestrator.sync(contact.publicIdentityKey) { inbound ->
-                    persistInbound(conversation, contact, inbound)
+                    if (inbound.kind == InnerKind.DEAL) {
+                        acceptDeal(conversation, contact, inbound)
+                    } else {
+                        persistInbound(conversation, contact, inbound)
+                    }
                 }
                 val live = orchestrator.link(contact.publicIdentityKey)
                 if (live == null || !live.peer.groupCreated) {
@@ -1171,11 +1292,81 @@ class ChatMessagingService @Inject constructor(
         )
     }
 
-    private suspend fun persistInbound(
-        conversation: com.codeyantra.armorchat.domain.model.Conversation,
+    private suspend fun acceptDeal(
+        conversation: Conversation,
         contact: Contact,
         inbound: InboundRecord,
     ) {
+        if (!ChatDealFactory.enabled(BuildConfig.DEBUG)) return
+        val identity = identityRepository.getIdentity() ?: throw MessagingProtocolException("deal handler missing")
+        val link = orchestrator.link(contact.publicIdentityKey) ?: throw MessagingProtocolException("deal handler missing")
+        try {
+            dealBridge(identity, conversation, contact, link.receipts).accept(inbound)
+        } catch (_: DealFormatException) {
+            // The envelope is rejected and stored. The relay copy can be consumed.
+        }
+    }
+
+    private suspend fun dealBridge(
+        identity: UserIdentity,
+        conversation: Conversation,
+        contact: Contact,
+        receipts: ReceiptMessagingPeer,
+    ): DealChatBridge {
+        dealBridges[conversation.id]?.let { return it }
+        val database = DealDatabase.open(context)
+        val protector = AndroidKeystoreDealKeyProtector()
+        val signer = dealSigner(identity)
+        val local = VerifiedDealParticipant.verify(identity.armorChatId, signer.publicKey)
+        val peer = VerifiedDealParticipant.verify(contact.armorChatId, Base64Url.decode(contact.publicIdentityKey))
+        val bridge = DealChatBridge(
+            database = database,
+            protector = protector,
+            drafts = DealDraftStore(
+                database = database,
+                protector = protector,
+                clock = { clock.nowEpochMs() },
+                debugBuild = BuildConfig.DEBUG,
+            ),
+            cipher = unusedDealCipher(),
+            signer = signer,
+            local = local,
+            peerParticipant = peer,
+            peer = receipts,
+            debugBuild = BuildConfig.DEBUG,
+            clock = { clock.nowEpochMs() },
+            localConversationId = conversation.id,
+        )
+        bridge.recover()
+        dealBridges[conversation.id] = bridge
+        return bridge
+    }
+
+    private suspend fun dealSigner(identity: UserIdentity): DealMessagingSigner {
+        val publicKey = Base64Url.decode(identity.publicIdentityKey)
+        return object : DealMessagingSigner {
+            override val publicKey: ByteArray = publicKey
+            override fun sign(payload: ByteArray): ByteArray =
+                runBlocking { keyStore.signDealIdentityBinding(payload) }
+
+            override fun toString(): String = "DealMessagingSigner"
+        }
+    }
+
+    /**
+     * DealTransportService requires a cipher object. The messaging path uses
+     * the authenticated session directly and does not seal with these bytes.
+     * They are not an MLS exporter and they are not a key shared with the peer.
+     */
+    private fun unusedDealCipher(): ExportedSessionCipher =
+        ExportedSessionCipher(ByteArray(32) { 1 }, ByteArray(32) { 2 })
+
+    private suspend fun persistInbound(
+        conversation: Conversation,
+        contact: Contact,
+        inbound: InboundRecord,
+    ) {
+        if (inbound.kind == InnerKind.DEAL || inbound.deal != null) return
         if (!inbound.kind.isUserMessage || inbound.text == null) return
         if (messageDao.findById(inbound.messageId) != null) return
         val nowMs = clock.nowEpochMs()

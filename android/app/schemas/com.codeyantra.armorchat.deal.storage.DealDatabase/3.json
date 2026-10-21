@@ -1,0 +1,652 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 3,
+    "identityHash": "c151e8c39a0a7b564a52398d568c8776",
+    "entities": [
+      {
+        "tableName": "deals",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`dealId` TEXT NOT NULL, `status` TEXT NOT NULL, `currentVersionId` TEXT NOT NULL, `createdAtEpochMs` INTEGER NOT NULL, `updatedAtEpochMs` INTEGER NOT NULL, PRIMARY KEY(`dealId`))",
+        "fields": [
+          {
+            "fieldPath": "dealId",
+            "columnName": "dealId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "currentVersionId",
+            "columnName": "currentVersionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtEpochMs",
+            "columnName": "createdAtEpochMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtEpochMs",
+            "columnName": "updatedAtEpochMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "dealId"
+          ]
+        }
+      },
+      {
+        "tableName": "deal_parties",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`dealId` TEXT NOT NULL, `partyId` TEXT NOT NULL, `role` TEXT NOT NULL, `label` TEXT NOT NULL, `signingPublicKey` TEXT NOT NULL, `encryptionPublicKey` TEXT NOT NULL, PRIMARY KEY(`dealId`, `partyId`), FOREIGN KEY(`dealId`) REFERENCES `deals`(`dealId`) ON UPDATE NO ACTION ON DELETE NO ACTION )",
+        "fields": [
+          {
+            "fieldPath": "dealId",
+            "columnName": "dealId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "partyId",
+            "columnName": "partyId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "role",
+            "columnName": "role",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "label",
+            "columnName": "label",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "signingPublicKey",
+            "columnName": "signingPublicKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "encryptionPublicKey",
+            "columnName": "encryptionPublicKey",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "dealId",
+            "partyId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_deal_parties_dealId",
+            "unique": false,
+            "columnNames": [
+              "dealId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_deal_parties_dealId` ON `${TABLE_NAME}` (`dealId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "deals",
+            "onDelete": "NO ACTION",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "dealId"
+            ],
+            "referencedColumns": [
+              "dealId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "deal_versions",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`dealId` TEXT NOT NULL, `versionId` TEXT NOT NULL, `parentVersionId` TEXT, `documentSha256` TEXT NOT NULL, `sealedDocument` BLOB NOT NULL, `superseded` INTEGER NOT NULL, `immutable` INTEGER NOT NULL, `createdAtEpochMs` INTEGER NOT NULL, PRIMARY KEY(`dealId`, `versionId`), FOREIGN KEY(`dealId`) REFERENCES `deals`(`dealId`) ON UPDATE NO ACTION ON DELETE NO ACTION )",
+        "fields": [
+          {
+            "fieldPath": "dealId",
+            "columnName": "dealId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "versionId",
+            "columnName": "versionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "parentVersionId",
+            "columnName": "parentVersionId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "documentSha256",
+            "columnName": "documentSha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sealedDocument",
+            "columnName": "sealedDocument",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "superseded",
+            "columnName": "superseded",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "immutable",
+            "columnName": "immutable",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtEpochMs",
+            "columnName": "createdAtEpochMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "dealId",
+            "versionId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_deal_versions_dealId",
+            "unique": false,
+            "columnNames": [
+              "dealId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_deal_versions_dealId` ON `${TABLE_NAME}` (`dealId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "deals",
+            "onDelete": "NO ACTION",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "dealId"
+            ],
+            "referencedColumns": [
+              "dealId"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "deal_signatures",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`dealId` TEXT NOT NULL, `versionId` TEXT NOT NULL, `partyId` TEXT NOT NULL, `action` TEXT NOT NULL, `signature` BLOB NOT NULL, `signerPublicKey` TEXT NOT NULL, PRIMARY KEY(`dealId`, `versionId`, `partyId`, `action`))",
+        "fields": [
+          {
+            "fieldPath": "dealId",
+            "columnName": "dealId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "versionId",
+            "columnName": "versionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "partyId",
+            "columnName": "partyId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "action",
+            "columnName": "action",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "signature",
+            "columnName": "signature",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "signerPublicKey",
+            "columnName": "signerPublicKey",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "dealId",
+            "versionId",
+            "partyId",
+            "action"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_deal_signatures_dealId",
+            "unique": false,
+            "columnNames": [
+              "dealId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_deal_signatures_dealId` ON `${TABLE_NAME}` (`dealId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "deal_backup_receipts",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`dealId` TEXT NOT NULL, `versionId` TEXT NOT NULL, `partyId` TEXT NOT NULL, `objectKey` TEXT NOT NULL, `ciphertextSha256` TEXT NOT NULL, `confirmedAtEpochMs` INTEGER NOT NULL, PRIMARY KEY(`dealId`, `versionId`, `partyId`))",
+        "fields": [
+          {
+            "fieldPath": "dealId",
+            "columnName": "dealId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "versionId",
+            "columnName": "versionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "partyId",
+            "columnName": "partyId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "objectKey",
+            "columnName": "objectKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ciphertextSha256",
+            "columnName": "ciphertextSha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "confirmedAtEpochMs",
+            "columnName": "confirmedAtEpochMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "dealId",
+            "versionId",
+            "partyId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_deal_backup_receipts_dealId",
+            "unique": false,
+            "columnNames": [
+              "dealId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_deal_backup_receipts_dealId` ON `${TABLE_NAME}` (`dealId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "deal_audit_events",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`eventId` TEXT NOT NULL, `dealId` TEXT NOT NULL, `action` TEXT NOT NULL, `outcome` TEXT NOT NULL, `createdAtEpochMs` INTEGER NOT NULL, PRIMARY KEY(`eventId`))",
+        "fields": [
+          {
+            "fieldPath": "eventId",
+            "columnName": "eventId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dealId",
+            "columnName": "dealId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "action",
+            "columnName": "action",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outcome",
+            "columnName": "outcome",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtEpochMs",
+            "columnName": "createdAtEpochMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "eventId"
+          ]
+        }
+      },
+      {
+        "tableName": "deal_recovery_meta",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`partyId` TEXT NOT NULL, `dealId` TEXT NOT NULL, `formatVersion` INTEGER NOT NULL, `publicKeyFingerprint` TEXT NOT NULL, `createdAtEpochMs` INTEGER NOT NULL, PRIMARY KEY(`partyId`, `dealId`))",
+        "fields": [
+          {
+            "fieldPath": "partyId",
+            "columnName": "partyId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dealId",
+            "columnName": "dealId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "formatVersion",
+            "columnName": "formatVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "publicKeyFingerprint",
+            "columnName": "publicKeyFingerprint",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtEpochMs",
+            "columnName": "createdAtEpochMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "partyId",
+            "dealId"
+          ]
+        }
+      },
+      {
+        "tableName": "deal_local_keys",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`partyId` TEXT NOT NULL, `sealedSigningKeyset` BLOB NOT NULL, `sealedEncryptionKeyset` BLOB NOT NULL, `signingPublicKey` TEXT NOT NULL, `encryptionPublicKey` TEXT NOT NULL, PRIMARY KEY(`partyId`))",
+        "fields": [
+          {
+            "fieldPath": "partyId",
+            "columnName": "partyId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sealedSigningKeyset",
+            "columnName": "sealedSigningKeyset",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sealedEncryptionKeyset",
+            "columnName": "sealedEncryptionKeyset",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "signingPublicKey",
+            "columnName": "signingPublicKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "encryptionPublicKey",
+            "columnName": "encryptionPublicKey",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "partyId"
+          ]
+        }
+      },
+      {
+        "tableName": "deal_drafts",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`draftId` TEXT NOT NULL, `dealId` TEXT NOT NULL, `versionId` TEXT NOT NULL, `conversationId` TEXT NOT NULL, `contactId` TEXT NOT NULL, `status` TEXT NOT NULL, `sealedPayload` BLOB NOT NULL, `sealedPartyASigning` BLOB NOT NULL, `sealedPartyAEncryption` BLOB NOT NULL, `createdAtEpochMs` INTEGER NOT NULL, `updatedAtEpochMs` INTEGER NOT NULL, PRIMARY KEY(`draftId`))",
+        "fields": [
+          {
+            "fieldPath": "draftId",
+            "columnName": "draftId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dealId",
+            "columnName": "dealId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "versionId",
+            "columnName": "versionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "conversationId",
+            "columnName": "conversationId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "contactId",
+            "columnName": "contactId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sealedPayload",
+            "columnName": "sealedPayload",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sealedPartyASigning",
+            "columnName": "sealedPartyASigning",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sealedPartyAEncryption",
+            "columnName": "sealedPartyAEncryption",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtEpochMs",
+            "columnName": "createdAtEpochMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtEpochMs",
+            "columnName": "updatedAtEpochMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "draftId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_deal_drafts_dealId",
+            "unique": true,
+            "columnNames": [
+              "dealId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_deal_drafts_dealId` ON `${TABLE_NAME}` (`dealId`)"
+          },
+          {
+            "name": "index_deal_drafts_conversationId",
+            "unique": false,
+            "columnNames": [
+              "conversationId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_deal_drafts_conversationId` ON `${TABLE_NAME}` (`conversationId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "deal_transport",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`envelopeId` TEXT NOT NULL, `dealId` TEXT NOT NULL, `versionId` TEXT NOT NULL, `conversationId` TEXT NOT NULL, `direction` TEXT NOT NULL, `eventType` TEXT NOT NULL, `status` TEXT NOT NULL, `sealedEnvelope` BLOB NOT NULL, `createdAtEpochMs` INTEGER NOT NULL, `updatedAtEpochMs` INTEGER NOT NULL, PRIMARY KEY(`envelopeId`))",
+        "fields": [
+          {
+            "fieldPath": "envelopeId",
+            "columnName": "envelopeId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dealId",
+            "columnName": "dealId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "versionId",
+            "columnName": "versionId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "conversationId",
+            "columnName": "conversationId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "direction",
+            "columnName": "direction",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventType",
+            "columnName": "eventType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sealedEnvelope",
+            "columnName": "sealedEnvelope",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAtEpochMs",
+            "columnName": "createdAtEpochMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAtEpochMs",
+            "columnName": "updatedAtEpochMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "envelopeId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_deal_transport_dealId",
+            "unique": false,
+            "columnNames": [
+              "dealId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_deal_transport_dealId` ON `${TABLE_NAME}` (`dealId`)"
+          },
+          {
+            "name": "index_deal_transport_conversationId",
+            "unique": false,
+            "columnNames": [
+              "conversationId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_deal_transport_conversationId` ON `${TABLE_NAME}` (`conversationId`)"
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'c151e8c39a0a7b564a52398d568c8776')"
+    ]
+  }
+}

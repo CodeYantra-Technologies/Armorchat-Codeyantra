@@ -6,7 +6,9 @@ import com.codeyantra.armorchat.deal.domain.ByteArrayOutput
 import com.codeyantra.armorchat.deal.domain.CanonicalDeal
 import com.codeyantra.armorchat.deal.domain.DealCryptoException
 import com.codeyantra.armorchat.deal.domain.DealFormatException
+import com.codeyantra.armorchat.deal.domain.DealIdentity
 import com.codeyantra.armorchat.deal.domain.DealSignature
+import com.codeyantra.armorchat.deal.domain.DealStateException
 import com.codeyantra.armorchat.deal.domain.SignAction
 import com.google.crypto.tink.KeysetHandle
 import com.google.crypto.tink.subtle.Ed25519Verify
@@ -20,6 +22,7 @@ import java.security.GeneralSecurityException
 object DealSignatures {
     fun sign(signingKey: KeysetHandle, deal: CanonicalDeal, partyId: String, action: SignAction): DealSignature {
         DealTink.register()
+        if (deal.identity != null) DealIdentity.requireSignable(deal, partyId)
         val party = deal.party(partyId)
         val payload = payloadBytes(
             action = action,
@@ -55,6 +58,13 @@ object DealSignatures {
             throw DealCryptoException.WrongVersion()
         }
         if (expectedAction != claimed.action) throw DealCryptoException.WrongAction()
+        if (deal.identity != null) {
+            try {
+                DealIdentity.requireSignable(deal, claimed.partyId)
+            } catch (e: DealStateException) {
+                throw DealCryptoException.InvalidSignature()
+            }
+        }
         val party = try {
             deal.party(claimed.partyId)
         } catch (e: DealCryptoException) {

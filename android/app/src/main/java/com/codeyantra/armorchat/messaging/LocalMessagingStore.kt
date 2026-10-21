@@ -21,6 +21,7 @@ data class OutboundRecord(
     val progress: MessageProgress = MessageProgress.initial(),
     val target: InnerBody.Receipt? = null,
     val replyTo: ReplyMetadata? = null,
+    val deal: InnerBody.Deal? = null,
 )
 
 data class InboundRecord(
@@ -37,6 +38,7 @@ data class InboundRecord(
     val displayed: Boolean = false,
     val clientSequence: Long? = null,
     val replyTo: ReplyMetadata? = null,
+    val deal: InnerBody.Deal? = null,
     /** Mesh-1K-O (P3): on a validated DELIVERY record only, the target outgoing message id. */
     val receiptTargetMessageId: String? = null,
 )

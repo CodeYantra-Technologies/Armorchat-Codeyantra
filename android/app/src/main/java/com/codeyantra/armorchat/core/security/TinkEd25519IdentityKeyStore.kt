@@ -1,6 +1,7 @@
 package com.codeyantra.armorchat.core.security
 
 import android.content.Context
+import com.codeyantra.armorchat.deal.domain.DealIdentity
 import com.codeyantra.armorchat.domain.identity.ArmorChatId
 import com.google.crypto.tink.InsecureSecretKeyAccess
 import com.google.crypto.tink.KeyTemplates
@@ -115,6 +116,26 @@ class TinkEd25519IdentityKeyStore @Inject constructor(
             try {
                 val handle = TinkProtoKeysetFormat.parseKeyset(serialized, InsecureSecretKeyAccess.get())
                 com.codeyantra.armorchat.crypto.RawIdentitySignature.sign(handle, framed)
+            } finally {
+                serialized.fill(0)
+            }
+        }
+    }
+
+    /**
+     * Signs one Armor Deal messaging-identity statement (identity binding,
+     * legal name, name-on-version, or Party B review). Payload bytes are signed
+     * unmodified. Any other domain, including chat and device contexts, is
+     * rejected before the private key is loaded.
+     */
+    override suspend fun signDealIdentityBinding(payload: ByteArray): ByteArray = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            requireDealIdentityBinding(payload)
+            ensureTinkRegistered()
+            val serialized = loadSerializedKeyset()
+            try {
+                val handle = TinkProtoKeysetFormat.parseKeyset(serialized, InsecureSecretKeyAccess.get())
+                com.codeyantra.armorchat.crypto.RawIdentitySignature.sign(handle, payload)
             } finally {
                 serialized.fill(0)
             }
@@ -244,6 +265,35 @@ class TinkEd25519IdentityKeyStore @Inject constructor(
     companion object {
         const val RELATIVE_DIR = "identity"
         const val BLOB_NAME = "ed25519_identity.v1.enc"
+        const val DEAL_BINDING_PREFIX = "ArmorDeal/identity-binding/v1\u0000"
+        private const val MAX_BINDING_PAYLOAD = 8192
+
+        /**
+         * Explicit allowlist of Armor Deal statement prefixes the messaging
+         * identity key may sign: exact domain bytes plus one NUL. Built from
+         * [DealIdentity.MESSAGING_SIGNER_DOMAINS] so the payload builders and
+         * this gate cannot drift. There is no generic "ArmorDeal/" prefix.
+         */
+        private val DEAL_SIGNING_PREFIXES: List<ByteArray> =
+            DealIdentity.MESSAGING_SIGNER_DOMAINS.map { domain ->
+                require(domain.isNotEmpty() && domain.all { it.code in 0x21..0x7e })
+                (domain + "\u0000").toByteArray(Charsets.US_ASCII)
+            }
+
+        internal fun requireDealIdentityBinding(payload: ByteArray) {
+            if (payload.size > MAX_BINDING_PAYLOAD) {
+                throw IllegalArgumentException("unsupported signing context")
+            }
+            val allowed = DEAL_SIGNING_PREFIXES.any { prefix ->
+                payload.size > prefix.size && hasPrefix(payload, prefix)
+            }
+            if (!allowed) throw IllegalArgumentException("unsupported signing context")
+        }
+
+        private fun hasPrefix(payload: ByteArray, prefix: ByteArray): Boolean {
+            for (i in prefix.indices) if (payload[i] != prefix[i]) return false
+            return true
+        }
         // Reserved for future X25519 session keys (not implemented in Phase 1A):
         // const val X25519_BLOB_NAME = "x25519_session.v1.enc"
 

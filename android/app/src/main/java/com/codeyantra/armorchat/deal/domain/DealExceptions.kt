@@ -9,7 +9,20 @@ class DealStateException(message: String) : DealException(message)
 
 class ImmutableVersionException : DealException("A signed deal version cannot be edited.")
 
+/** Local SIGN refused: this phone's party already signed, or the version is fully signed. */
+class DealAlreadySignedException : DealException("This phone already signed this agreement.")
+
+/** Local review, name or SIGN refused: no review consent for the persisted current version and hash. */
+class DealReviewRequiredException : DealException("Read the complete agreement first.")
+
 class DealConflictException : DealException("Existing deal data does not match this restore.")
+
+class DealIntegrityException(
+    val defect: FinalityDefect,
+) : DealException("Stored agreement finality is not proven.")
+
+/** One participant tried to authorize the other participant's key or legal name. */
+class ForeignPartyException : DealException("A participant cannot authorize the other participant.")
 
 sealed class DealCryptoException(message: String) : DealException(message) {
     class AuthenticationFailed : DealCryptoException("Authenticated decryption failed.")

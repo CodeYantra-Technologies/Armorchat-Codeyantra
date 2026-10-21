@@ -14,6 +14,13 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.codeyantra.armorchat.BuildConfig
+import com.codeyantra.armorchat.deal.DealFeature
+import com.codeyantra.armorchat.deal.DealLabGate
+import com.codeyantra.armorchat.deal.lab.DealLabDestination
+import com.codeyantra.armorchat.deal.lab.installDealLabDestination
+import com.codeyantra.armorchat.deal.origin.ChatDealDestination
+import com.codeyantra.armorchat.deal.origin.ChatDealFactory
+import com.codeyantra.armorchat.deal.origin.installChatDealDestination
 import com.codeyantra.armorchat.domain.model.UserIdentity
 import com.codeyantra.armorchat.feature.chat.ChatRoute
 import com.codeyantra.armorchat.feature.contacts.ContactDetailRoute
@@ -127,6 +134,11 @@ fun ArmorChatNavGraph(
                 } else {
                     null
                 },
+                onDealLab = if (DealLabGate.visible(BuildConfig.DEBUG, DealFeature.PRODUCTION_UI_ENABLED)) {
+                    { navController.navigate(DealLabDestination.route()) }
+                } else {
+                    null
+                },
                 onOpenConversation = { conversationId ->
                     navController.navigate(Routes.chat(conversationId))
                 },
@@ -135,11 +147,17 @@ fun ArmorChatNavGraph(
         composable(
             route = Routes.Chat,
             arguments = listOf(navArgument("conversationId") { type = NavType.StringType }),
-        ) {
+        ) { entry ->
+            val conversationId = entry.arguments?.getString("conversationId").orEmpty()
             ChatRoute(
                 onBack = { navController.popBackStack() },
                 onOpenContact = { contactId ->
                     navController.navigate(Routes.contactDetail(contactId))
+                },
+                onCreateDeal = if (ChatDealFactory.enabled(BuildConfig.DEBUG) && conversationId.isNotBlank()) {
+                    { navController.navigate(ChatDealDestination.route(conversationId)) }
+                } else {
+                    null
                 },
             )
         }
@@ -184,5 +202,7 @@ fun ArmorChatNavGraph(
         composable(Routes.TwoPhoneTest) {
             TwoPhoneTestRoute(onBack = { navController.popBackStack() })
         }
+        installDealLabDestination(navController)
+        installChatDealDestination(navController)
     }
 }

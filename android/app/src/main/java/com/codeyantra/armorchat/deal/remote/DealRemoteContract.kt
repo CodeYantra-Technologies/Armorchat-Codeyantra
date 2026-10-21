@@ -1,6 +1,7 @@
 package com.codeyantra.armorchat.deal.remote
 
 import com.codeyantra.armorchat.deal.domain.DealAccessException
+import com.codeyantra.armorchat.deal.domain.FinalityVerdict
 import com.codeyantra.armorchat.deal.domain.DealCryptoException
 import com.codeyantra.armorchat.deal.domain.DealEvent
 import com.codeyantra.armorchat.deal.domain.DealIds
@@ -68,16 +69,19 @@ object BackupReceiptVerifier {
 }
 
 /**
- * Execution requires a paired backup receipt for every party. The lifecycle
- * edge alone is not enough to mark a deal executed.
+ * Optional cloud-backup bookkeeping. Execution still requires a paired backup
+ * receipt for every party. A status string is not enough: [verdict] must already
+ * prove two signatures over the same canonical document.
  */
 object DealExecution {
     fun confirm(
+        verdict: FinalityVerdict,
         status: DealStatus,
         receipts: List<BackupReceipt>,
         partyIds: Set<String>,
         localCiphertext: ByteArray,
     ): DealStatus {
+        if (!DealLifecycle.isFinalized(status, verdict)) throw DealRecoveryException.Rejected()
         BackupReceiptVerifier.assertPaired(receipts, partyIds)
         receipts.forEach { receipt ->
             BackupReceiptVerifier.verify(receipt, localCiphertext, objectExists = true)

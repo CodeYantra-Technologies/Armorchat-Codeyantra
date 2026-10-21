@@ -58,6 +58,12 @@ class DealKeyMaterial private constructor(
     fun serializedEncryption(): ByteArray =
         TinkProtoKeysetFormat.serializeKeyset(encryption, InsecureSecretKeyAccess.get())
 
+    /** Public HPKE keyset only. This does not contain the private key. */
+    fun serializedPublicEncryption(): ByteArray {
+        DealTink.register()
+        return TinkProtoKeysetFormat.serializeKeysetWithoutSecret(encryption.publicKeysetHandle)
+    }
+
     override fun toString(): String = "DealKeyMaterial(signingBytes=32, encryptionBytes=32)"
 
     companion object {
@@ -93,6 +99,28 @@ class DealKeyMaterial private constructor(
             } catch (e: GeneralSecurityException) {
                 throw DealFormatException("Keyset could not be parsed.")
             }
+        }
+
+        fun parsePublicEncryption(bytes: ByteArray): KeysetHandle {
+            DealTink.register()
+            if (bytes.isEmpty() || bytes.size > MAX_KEYSET_BYTES) {
+                throw DealFormatException("Keyset length is invalid.")
+            }
+            return try {
+                val handle = TinkProtoKeysetFormat.parseKeysetWithoutSecret(bytes)
+                requireRawKey(publicEncryptionRaw(handle), "encryption")
+                handle
+            } catch (e: DealFormatException) {
+                throw e
+            } catch (e: GeneralSecurityException) {
+                throw DealFormatException("Keyset could not be parsed.")
+            }
+        }
+
+        fun publicEncryptionRaw(handle: KeysetHandle): ByteArray {
+            val raw = (handle.primary.key as HpkePublicKey).publicKeyBytes.toByteArray()
+            requireRawKey(raw, "encryption")
+            return raw.copyOf()
         }
 
         private fun fromHandles(signing: KeysetHandle, encryption: KeysetHandle): DealKeyMaterial {

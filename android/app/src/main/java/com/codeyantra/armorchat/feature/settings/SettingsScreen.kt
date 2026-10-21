@@ -50,6 +50,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.codeyantra.armorchat.BuildConfig
 import com.codeyantra.armorchat.R
+import com.codeyantra.armorchat.deal.lab.DealLabSettingsEntry
 import com.codeyantra.armorchat.domain.model.ThemeMode
 
 @Composable
@@ -61,6 +62,7 @@ fun SettingsScreen(
     onNetworkPrivacy: () -> Unit,
     onEmergencyMesh: () -> Unit,
     onTwoPhoneTest: (() -> Unit)? = null,
+    onDealLab: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
@@ -251,6 +253,8 @@ fun SettingsScreen(
                 }
             }
         }
+
+        DealLabSettingsEntry(onOpen = onDealLab)
 
         Spacer(Modifier.height(8.dp))
 

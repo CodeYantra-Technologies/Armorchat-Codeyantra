@@ -121,3 +121,53 @@ data class DealLocalKeyRow(
     val signingPublicKey: String,
     val encryptionPublicKey: String,
 )
+
+/**
+ * One unsent chat draft. Terms, purpose, amounts, and legal names are inside
+ * [sealedPayload], not columns. This row is not a signed agreement and has no
+ * foreign key into [DealRow].
+ */
+@Entity(
+    tableName = "deal_drafts",
+    indices = [
+        Index(value = ["dealId"], unique = true, name = "index_deal_drafts_dealId"),
+        Index(value = ["conversationId"], name = "index_deal_drafts_conversationId"),
+    ],
+)
+data class DealDraftRow(
+    @PrimaryKey val draftId: String,
+    val dealId: String,
+    val versionId: String,
+    val conversationId: String,
+    val contactId: String,
+    val status: String,
+    val sealedPayload: ByteArray,
+    val sealedPartyASigning: ByteArray,
+    val sealedPartyAEncryption: ByteArray,
+    val createdAtEpochMs: Long,
+    val updatedAtEpochMs: Long,
+)
+
+/**
+ * One Armor Deal envelope at rest. The blob is sealed. Terms, purpose, notes,
+ * and legal names are not columns. This row is not a final signature.
+ */
+@Entity(
+    tableName = "deal_transport",
+    indices = [
+        Index(value = ["dealId"], name = "index_deal_transport_dealId"),
+        Index(value = ["conversationId"], name = "index_deal_transport_conversationId"),
+    ],
+)
+data class DealTransportRow(
+    @PrimaryKey val envelopeId: String,
+    val dealId: String,
+    val versionId: String,
+    val conversationId: String,
+    val direction: String,
+    val eventType: String,
+    val status: String,
+    val sealedEnvelope: ByteArray,
+    val createdAtEpochMs: Long,
+    val updatedAtEpochMs: Long,
+)

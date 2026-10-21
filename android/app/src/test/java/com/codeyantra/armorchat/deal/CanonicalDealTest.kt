@@ -2,13 +2,20 @@ package com.codeyantra.armorchat.deal
 
 import com.codeyantra.armorchat.deal.domain.CanonicalDeal
 import com.codeyantra.armorchat.deal.domain.CanonicalEncoding
+import com.codeyantra.armorchat.deal.domain.DealConflictException
+import com.codeyantra.armorchat.deal.domain.DealEvent
 import com.codeyantra.armorchat.deal.domain.DealFormatException
+import com.codeyantra.armorchat.deal.domain.DealLifecycle
+import com.codeyantra.armorchat.deal.domain.FinalityDefect
+import com.codeyantra.armorchat.deal.domain.FinalityVerdict
 import com.codeyantra.armorchat.deal.domain.DealParty
+import com.codeyantra.armorchat.deal.domain.DealSignature
 import com.codeyantra.armorchat.deal.domain.DealStateException
 import com.codeyantra.armorchat.deal.domain.DealStatus
 import com.codeyantra.armorchat.deal.domain.DealVersions
 import com.codeyantra.armorchat.deal.domain.ImmutableVersionException
 import com.codeyantra.armorchat.deal.domain.PartyRole
+import com.codeyantra.armorchat.deal.domain.SignAction
 import com.codeyantra.armorchat.deal.domain.sha256
 import com.codeyantra.armorchat.deal.testing.hexToBytes
 import com.codeyantra.armorchat.deal.testing.toHex
@@ -17,6 +24,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CanonicalDealTest {
@@ -219,4 +227,181 @@ class DealLifecycleTest {
         }
         assertArrayEquals(original, deal.canonicalBytes())
     }
+
+    @Test
+    fun invalidAndDuplicateEventsAreRejected() {
+        assertThrows(DealStateException::class.java) {
+            DealLifecycle.transition(DealStatus.PROPOSED, DealEvent.PROPOSE)
+        }
+        assertThrows(DealStateException::class.java) {
+            DealLifecycle.transition(DealStatus.PARTIALLY_SIGNED, DealEvent.PARTIAL_SIGN)
+        }
+        assertThrows(DealStateException::class.java) {
+            DealLifecycle.transition(DealStatus.FULLY_SIGNED, DealEvent.FULL_SIGN)
+        }
+        assertThrows(DealStateException::class.java) {
+            DealLifecycle.transition(DealStatus.CANCELLED, DealEvent.CANCEL)
+        }
+        assertThrows(DealStateException::class.java) {
+            DealLifecycle.transition(DealStatus.EXPIRED, DealEvent.EXPIRE)
+        }
+        assertThrows(DealStateException::class.java) {
+            DealLifecycle.transition(DealStatus.NEGOTIATING, DealEvent.PROPOSE)
+        }
+    }
+
+    @Test
+    fun partiallySignedDealCanBeCancelledWithoutDroppingItsSignature() {
+        assertEquals(
+            DealStatus.CANCELLED,
+            DealLifecycle.transition(DealStatus.PARTIALLY_SIGNED, DealEvent.CANCEL),
+        )
+        assertEquals(
+            DealStatus.EXPIRED,
+            DealLifecycle.transition(DealStatus.PARTIALLY_SIGNED, DealEvent.EXPIRE),
+        )
+        val deal = openDeal()
+        val signature = signature(deal, deal.parties.first().partyId)
+        val kept = DealVersions.historicalSignatures(
+            listOf(signature),
+            supersededVersionId = deal.versionId,
+            successorVersionId = "w".repeat(22),
+        )
+        assertEquals(1, kept.size)
+        assertEquals(deal.versionId, kept.single().versionId)
+        assertTrue(kept.single().signature.contentEquals(signature.signature))
+    }
+
+    @Test
+    fun oneSignatureStartsANewVersionAndLeavesTheOldSignatureBehind() {
+        val deal = openDeal()
+        val original = deal.canonicalBytes()
+        val signature = signature(deal, deal.parties.first().partyId)
+        val successor = DealVersions.revise(
+            current = deal,
+            currentBytes = original,
+            signatureCount = 1,
+            dealStatus = DealStatus.PARTIALLY_SIGNED,
+            newVersionId = "w".repeat(22),
+            newTerms = "Pay 10.50 as 1050 minor units, revised",
+            revisedAtEpochMs = 1_700_000_000_100,
+        )
+        val historical = DealVersions.historicalSignatures(
+            listOf(signature),
+            supersededVersionId = deal.versionId,
+            successorVersionId = successor.versionId,
+        )
+        assertEquals(DealStatus.NEGOTIATING, DealLifecycle.transition(DealStatus.PARTIALLY_SIGNED, DealEvent.SUPERSEDE))
+        assertArrayEquals(original, deal.canonicalBytes())
+        assertEquals(deal.versionId, successor.parentVersionId)
+        assertEquals(listOf(deal.versionId), successor.ancestry)
+        assertFalse(original.contentEquals(successor.canonicalBytes()))
+        assertEquals(deal.versionId, historical.single().versionId)
+        assertFalse(historical.any { it.versionId == successor.versionId })
+        assertThrows(DealConflictException::class.java) {
+            DealVersions.historicalSignatures(
+                listOf(signature.copyBoundTo(successor.versionId)),
+                deal.versionId,
+                successor.versionId,
+            )
+        }
+        assertThrows(ImmutableVersionException::class.java) {
+            DealVersions.revise(
+                current = deal,
+                currentBytes = original,
+                signatureCount = 2,
+                dealStatus = DealStatus.PARTIALLY_SIGNED,
+                newVersionId = "x".repeat(22),
+                newTerms = "both signatures already exist",
+                revisedAtEpochMs = 1_700_000_000_200,
+            )
+        }
+    }
+
+    @Test
+    fun finalizedAgreementRejectsCancelExpireAndRevisionWithoutReceipts() {
+        val unproven = FinalityVerdict.failed(FinalityDefect.MISSING_SIGNATURE)
+        val proven = FinalityVerdict.proven()
+        listOf(DealStatus.FULLY_SIGNED, DealStatus.BACKUP_PENDING, DealStatus.EXECUTED).forEach { status ->
+            assertTrue(DealLifecycle.claimsFinality(status))
+            assertTrue(DealLifecycle.isFinalized(status, proven))
+            assertFalse(DealLifecycle.isFinalized(status, unproven))
+        }
+        assertFalse(DealLifecycle.claimsFinality(DealStatus.PARTIALLY_SIGNED))
+        assertFalse(DealLifecycle.isFinalized(DealStatus.PARTIALLY_SIGNED, proven))
+        assertFalse(DealLifecycle.isFinalized(DealStatus.PARTIALLY_SIGNED, unproven))
+        assertEquals(
+            DealStatus.FULLY_SIGNED,
+            DealLifecycle.transition(DealStatus.PARTIALLY_SIGNED, DealEvent.FULL_SIGN),
+        )
+        listOf(DealStatus.FULLY_SIGNED, DealStatus.BACKUP_PENDING, DealStatus.EXECUTED).forEach { status ->
+            assertThrows(DealStateException::class.java) {
+                DealLifecycle.transition(status, DealEvent.CANCEL)
+            }
+            assertThrows(DealStateException::class.java) {
+                DealLifecycle.transition(status, DealEvent.EXPIRE)
+            }
+            assertThrows(DealStateException::class.java) {
+                DealLifecycle.transition(status, DealEvent.SUPERSEDE)
+            }
+            assertFalse(DealLifecycle.allowsRevision(status))
+        }
+        val deal = openDeal()
+        val original = deal.canonicalBytes()
+        listOf(
+            DealStatus.FULLY_SIGNED to 0,
+            DealStatus.BACKUP_PENDING to 1,
+            DealStatus.EXECUTED to 0,
+            DealStatus.PARTIALLY_SIGNED to 2,
+        ).forEach { (status, count) ->
+            assertThrows(ImmutableVersionException::class.java) {
+                DealVersions.revise(
+                    current = deal,
+                    currentBytes = original,
+                    signatureCount = count,
+                    dealStatus = status,
+                    newVersionId = "w".repeat(22),
+                    newTerms = "changed after both signatures",
+                    revisedAtEpochMs = 1_700_000_000_300,
+                )
+            }
+        }
+        assertArrayEquals(original, deal.canonicalBytes())
+        assertFalse(DealLifecycle.allowsFinalizedStatus(DealStatus.FULLY_SIGNED, DealStatus.CANCELLED))
+        assertFalse(DealLifecycle.allowsFinalizedStatus(DealStatus.BACKUP_PENDING, DealStatus.EXPIRED))
+        assertTrue(DealLifecycle.allowsFinalizedStatus(DealStatus.FULLY_SIGNED, DealStatus.BACKUP_PENDING))
+    }
+
+    private fun openDeal(): CanonicalDeal = CanonicalDeal.create(
+        dealId = "d".repeat(22),
+        versionId = "v".repeat(22),
+        parentVersionId = null,
+        createdAtEpochMs = 1_700_000_000_000,
+        currency = "USD",
+        amountMinor = 1050,
+        parties = listOf(
+            DealParty("a".repeat(22), PartyRole.PROPOSER, "A", ByteArray(32) { 1 }, ByteArray(32) { 2 }),
+            DealParty("b".repeat(22), PartyRole.COUNTERPARTY, "B", ByteArray(32) { 3 }, ByteArray(32) { 4 }),
+        ),
+        ancestry = emptyList(),
+        terms = "Pay 10.50 as 1050 minor units",
+    )
+
+    private fun signature(deal: CanonicalDeal, partyId: String): DealSignature = DealSignature(
+        dealId = deal.dealId,
+        versionId = deal.versionId,
+        partyId = partyId,
+        action = SignAction.SIGN,
+        signature = ByteArray(64) { 7 },
+        signerPublicKey = deal.party(partyId).signingPublicKey,
+    )
+
+    private fun DealSignature.copyBoundTo(versionId: String): DealSignature = DealSignature(
+        dealId = dealId,
+        versionId = versionId,
+        partyId = partyId,
+        action = action,
+        signature = signature,
+        signerPublicKey = signerPublicKey,
+    )
 }

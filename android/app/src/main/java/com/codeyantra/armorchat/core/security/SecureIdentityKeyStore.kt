@@ -52,4 +52,12 @@ interface SecureIdentityKeyStore {
     suspend fun signFramed(context: String, framed: ByteArray): ByteArray {
         throw UnsupportedOperationException("identity framing signature is not available")
     }
+
+    /**
+     * Signs one Armor Deal identity-binding payload. The payload must already
+     * be the `ArmorDeal/identity-binding/v1` statement. Other domains are rejected.
+     */
+    suspend fun signDealIdentityBinding(payload: ByteArray): ByteArray {
+        throw UnsupportedOperationException("deal identity binding is not available")
+    }
 }

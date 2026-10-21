@@ -3,7 +3,6 @@ package com.codeyantra.armorchat.deal.recovery
 import com.codeyantra.armorchat.deal.DealFeature
 import com.codeyantra.armorchat.deal.crypto.DealCipher
 import com.codeyantra.armorchat.deal.crypto.DealKeyMaterial
-import com.codeyantra.armorchat.deal.crypto.DealSignatures
 import com.codeyantra.armorchat.deal.crypto.SealedDocument
 import com.codeyantra.armorchat.deal.domain.ByteArrayOutput
 import com.codeyantra.armorchat.deal.domain.CanonicalDeal
@@ -194,25 +193,9 @@ class DealRecovery(
     }
 
     private fun verifySignatureSet(deal: CanonicalDeal, signatures: List<DealSignature>) {
-        if (signatures.size != 2) throw DealRecoveryException.Rejected()
-        val seen = signatures.map { it.partyId }.toSet()
-        if (seen != deal.parties.map { it.partyId }.toSet()) throw DealRecoveryException.Rejected()
-        for (signature in signatures) {
-            if (signature.action != SignAction.SIGN) throw DealRecoveryException.Rejected()
-            val pinned = deal.party(signature.partyId).signingPublicKey
-            try {
-                DealSignatures.verify(
-                    deal = deal,
-                    claimed = signature,
-                    expectedAction = SignAction.SIGN,
-                    expectedDealId = deal.dealId,
-                    expectedVersionId = deal.versionId,
-                    pinnedPublicKey = pinned,
-                )
-            } catch (e: Exception) {
-                throw DealRecoveryException.Rejected()
-            }
-        }
+        val pinned = deal.parties.associate { it.partyId to it.signingPublicKey }
+        val verdict = com.codeyantra.armorchat.deal.domain.DealFinality.assess(deal, signatures, pinned)
+        if (!verdict.proven) throw DealRecoveryException.Rejected()
     }
 
     private fun encodePayload(

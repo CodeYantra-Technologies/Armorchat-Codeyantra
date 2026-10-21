@@ -61,6 +61,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.codeyantra.armorchat.R
 import com.codeyantra.armorchat.domain.model.AttachmentMetadata
+import com.codeyantra.armorchat.deal.origin.ChatDealTopBarAction
 import com.codeyantra.armorchat.domain.model.Message
 import com.codeyantra.armorchat.messaging.SecureSessionState
 import com.codeyantra.armorchat.messaging.SecureSessionView
@@ -76,6 +77,7 @@ import kotlinx.coroutines.launch
 fun ChatRoute(
     onBack: () -> Unit,
     onOpenContact: (contactId: String) -> Unit,
+    onCreateDeal: (() -> Unit)? = null,
     viewModel: ChatViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -112,12 +114,23 @@ fun ChatRoute(
             kotlinx.coroutines.delay(3_000)
         }
     }
+    val dealAction = if (
+        onCreateDeal != null &&
+        state.contact != null &&
+        state.conversation != null &&
+        state.conversation?.contactId == state.contact?.id
+    ) {
+        onCreateDeal
+    } else {
+        null
+    }
     ChatScreen(
         state = state,
         onBack = onBack,
         onOpenContact = {
             state.contact?.id?.let(onOpenContact)
         },
+        onCreateDeal = dealAction,
         onDraftChange = viewModel::onDraftChange,
         onSendText = viewModel::send,
         onSendAttachment = { pending ->
@@ -150,6 +163,7 @@ fun ChatScreen(
     state: ChatUiState,
     onBack: () -> Unit,
     onOpenContact: () -> Unit,
+    onCreateDeal: (() -> Unit)? = null,
     onDraftChange: (String) -> Unit,
     onSendText: () -> Unit,
     onSendAttachment: (PendingAttachment) -> Unit,
@@ -230,6 +244,9 @@ fun ChatScreen(
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = colors.surface,
                 ),
+                actions = {
+                    ChatDealTopBarAction(onCreateDeal)
+                },
             )
         },
         bottomBar = {

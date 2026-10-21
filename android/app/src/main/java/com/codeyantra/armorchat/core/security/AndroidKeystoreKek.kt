@@ -15,9 +15,12 @@ import javax.inject.Singleton
  * Non-exportable AES-256-GCM key-encryption key in Android Keystore.
  *
  * Alias: [KEK_ALIAS]
+ *
+ * Open only so JVM unit tests can substitute a software KEK and exercise the
+ * real Tink identity signer; production always injects this class.
  */
 @Singleton
-class AndroidKeystoreKek @Inject constructor() {
+open class AndroidKeystoreKek @Inject constructor() {
 
     companion object {
         const val KEK_ALIAS = "armorchat_identity_kek_v1"
@@ -29,7 +32,7 @@ class AndroidKeystoreKek @Inject constructor() {
         const val ENVELOPE_VERSION: Byte = 1
     }
 
-    fun encrypt(plaintext: ByteArray): ByteArray {
+    open fun encrypt(plaintext: ByteArray): ByteArray {
         val key = getOrCreateKek()
         return try {
             val cipher = Cipher.getInstance(TRANSFORMATION)
@@ -52,7 +55,7 @@ class AndroidKeystoreKek @Inject constructor() {
         }
     }
 
-    fun decrypt(envelope: ByteArray): ByteArray {
+    open fun decrypt(envelope: ByteArray): ByteArray {
         if (envelope.isEmpty() || envelope[0] != ENVELOPE_VERSION) {
             throw IdentityStorageException.Corrupted("Unsupported or empty identity envelope.")
         }

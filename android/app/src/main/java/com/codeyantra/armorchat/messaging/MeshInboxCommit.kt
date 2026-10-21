@@ -156,6 +156,7 @@ internal class MeshInboxCommit(
 
         /** Same row mapping as ChatMessagingService.persistInbound; null where it returns early. */
         fun inboundRow(conversationId: String, inbound: InboundRecord, nowMs: Long): MessageEntity? {
+            if (inbound.kind == InnerKind.DEAL || inbound.deal != null) return null
             if (!inbound.kind.isUserMessage || inbound.text == null) return null
             val meta = attachmentMeta(inbound)
             return MessageEntity(

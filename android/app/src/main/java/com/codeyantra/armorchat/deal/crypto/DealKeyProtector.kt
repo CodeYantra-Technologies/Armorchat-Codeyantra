@@ -28,7 +28,13 @@ interface DealKeyProtector {
  * There is no software fallback. If the alias is missing at open time, device
  * access is treated as revoked and local rows are left unchanged by the caller.
  */
-class AndroidKeystoreDealKeyProtector : DealKeyProtector {
+class AndroidKeystoreDealKeyProtector(
+    private val alias: String = ALIAS,
+) : DealKeyProtector {
+    init {
+        if (alias != ALIAS && alias != PROBE_ALIAS) throw DealKeyException.KeystoreUnavailable()
+    }
+
     override fun seal(plaintext: ByteArray, purpose: String): ByteArray {
         val key = getOrCreate()
         return try {
@@ -79,7 +85,7 @@ class AndroidKeystoreDealKeyProtector : DealKeyProtector {
         return try {
             val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE)
             generator.init(
-                KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+                KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
                     .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                     .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
                     .setKeySize(256)
@@ -97,7 +103,7 @@ class AndroidKeystoreDealKeyProtector : DealKeyProtector {
         return try {
             val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
             keyStore.load(null)
-            val entry = keyStore.getEntry(ALIAS, null) as? KeyStore.SecretKeyEntry
+            val entry = keyStore.getEntry(alias, null) as? KeyStore.SecretKeyEntry
             entry?.secretKey
         } catch (e: Exception) {
             throw DealKeyException.KeystoreUnavailable()
@@ -111,6 +117,12 @@ class AndroidKeystoreDealKeyProtector : DealKeyProtector {
 
     companion object {
         const val ALIAS = "armorchat_deal_local_kek_v1"
+
+        /**
+         * Debug instrumentation alias. The app never constructs this alias.
+         * Device tests may create and delete only this entry.
+         */
+        const val PROBE_ALIAS = "armorchat_deal_keystore_probe_v1"
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
         private const val IV_LENGTH = 12

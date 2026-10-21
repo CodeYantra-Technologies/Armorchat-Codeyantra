@@ -4,6 +4,8 @@ import com.codeyantra.armorchat.core.network.ImmutableRelayEnvelope
 import com.codeyantra.armorchat.core.network.LeasedRelayEnvelope
 import com.codeyantra.armorchat.core.network.RelayQueueState
 import com.codeyantra.armorchat.core.network.RelaySubmitResult
+import com.codeyantra.armorchat.deal.transport.DealFrameChunk
+import com.codeyantra.armorchat.deal.transport.DealFrames
 import com.codeyantra.armorchat.domain.identity.Base64Url
 import com.codeyantra.armorchat.domain.model.MessageStatus
 import java.security.SecureRandom
@@ -25,6 +27,8 @@ class ReceiptMessagingPeer(
 ) {
     val store = LocalMessagingStore()
     var submitInterceptor: ((ImmutableRelayEnvelope) -> RelaySubmitResult?)? = null
+    var dealInbound: (suspend (InboundRecord) -> Unit)? = null
+
     /**
      * Mesh-1K-O (P3): verification-only receipt targets rebuilt from durable outgoing rows
      * (MeshReceiptAck.durableTargets). Receipt validation consults it ONLY when [store] has no record
@@ -140,6 +144,60 @@ class ReceiptMessagingPeer(
         }
         encryptText(queued)
         return submitOutbound(messageId, isReceipt = false, acknowledgeRelay = acknowledgeRelay)
+    }
+
+    /**
+     * Sends one deal envelope over this authenticated session.
+     * Each chunk is an inner record of kind deal. A retry resubmits the same ciphertext.
+     * The call returns only after every chunk is accepted. Otherwise the deal row stays queued.
+     */
+    suspend fun sendDealPayload(payload: ByteArray): List<OutboundRecord> {
+        val owned = payload.copyOf()
+        try {
+            val chunks = DealFrames.split(owned)
+            val sent = mutableListOf<OutboundRecord>()
+            for (chunk in chunks) {
+                val record = sendDealChunk(chunk)
+                if (record.progress.status != MessageStatus.SENT) {
+                    throw MessagingProtocolException("deal delivery waiting")
+                }
+                sent += record
+            }
+            return sent
+        } finally {
+            owned.fill(0)
+        }
+    }
+
+    private suspend fun sendDealChunk(chunk: DealFrameChunk): OutboundRecord {
+        val route = peer.peerRoute ?: error("peer route required")
+        val now = nowSeconds()
+        val messageId = Base64Url.encode(randomBytes(16))
+        val body = InnerBody.Deal(
+            protocol = 1L,
+            envelopeId = chunk.envelopeId,
+            chunkIndex = chunk.index.toLong(),
+            chunkCount = chunk.count.toLong(),
+            frameSha256 = chunk.frameSha256,
+            chunk = Base64Url.encode(chunk.bytes),
+        )
+        val queued = store.commit {
+            val record = OutboundRecord(
+                messageId = messageId,
+                kind = InnerKind.DEAL,
+                expiresAt = now + OutboxPolicy.TTL_SECONDS,
+                createdAt = now,
+                peerIdentity = route.inviterPin,
+                peerDeviceId = route.deviceId,
+                peerGeneration = route.generation,
+                progress = MessageProgress.initial(),
+                deal = body,
+            )
+            putText(record)
+            record
+        }
+        encryptText(queued)
+        return submitOutbound(messageId, isReceipt = false, acknowledgeRelay = true)
     }
 
     suspend fun flushOutbox() {
@@ -267,6 +325,9 @@ class ReceiptMessagingPeer(
                 if (existingInbound != null && persistInbound != null) {
                     persistInbound(existingInbound)
                 }
+                if (existingInbound?.kind == InnerKind.DEAL) {
+                    dealInbound?.invoke(existingInbound)
+                }
                 if (consumeOnSuccess) peer.consumeLeased(item)
             }
             return
@@ -307,6 +368,14 @@ class ReceiptMessagingPeer(
                 is MessagingProtocolException -> e
                 else -> MessagingProtocolException("inner rejected")
             }
+        }
+        if (inner.kind == InnerKind.DEAL && item.envelopeSha256 == "mesh") {
+            peer.restore(mlsBefore)
+            throw MessagingProtocolException("deal mesh refused")
+        }
+        if (inner.kind == InnerKind.DEAL && persistInbound == null && dealInbound == null) {
+            peer.restore(mlsBefore)
+            throw MessagingProtocolException("deal handler missing")
         }
         var pendingRoute: String? = null
         val inboundRecord: InboundRecord = try {
@@ -390,6 +459,38 @@ class ReceiptMessagingPeer(
                             accepted = true,
                         )
                     }
+                    InnerKind.DEAL -> {
+                        val body = inner.body as? InnerBody.Deal
+                            ?: throw MessagingProtocolException("deal body")
+                        putInbound(
+                            InboundRecord(
+                                messageId = inner.messageId,
+                                sessionId = inner.sessionId,
+                                epoch = inner.epoch,
+                                ciphertextSha256 = digest,
+                                peerIdentity = inner.senderIdentityKey,
+                                peerGeneration = inner.senderGeneration,
+                                peerDeviceId = inner.senderDeviceId,
+                                kind = inner.kind,
+                                text = null,
+                                accepted = true,
+                                deal = body,
+                            ),
+                        )
+                        InboundRecord(
+                            messageId = inner.messageId,
+                            sessionId = inner.sessionId,
+                            epoch = inner.epoch,
+                            ciphertextSha256 = digest,
+                            peerIdentity = inner.senderIdentityKey,
+                            peerGeneration = inner.senderGeneration,
+                            peerDeviceId = inner.senderDeviceId,
+                            kind = inner.kind,
+                            text = null,
+                            accepted = true,
+                            deal = body,
+                        )
+                    }
                 }
                 rec
             }
@@ -399,9 +500,10 @@ class ReceiptMessagingPeer(
         }
 
         // STEP 5: Durable local persistence BEFORE relay consume!
-        if (persistInbound != null) {
+        if (persistInbound != null || inner.kind == InnerKind.DEAL) {
             try {
-                persistInbound(inboundRecord)
+                if (persistInbound != null) persistInbound(inboundRecord)
+                if (inner.kind == InnerKind.DEAL) dealInbound?.invoke(inboundRecord)
             } catch (e: Exception) {
                 peer.restore(mlsBefore)
                 store.commit { removeSeen(seenKey) }
@@ -534,7 +636,8 @@ class ReceiptMessagingPeer(
                     val metaWithReply = if (record.replyTo != null) meta.copy(replyTo = record.replyTo) else meta
                     metaWithReply.toInnerBody(record.clientSequence ?: error("seq"))
                 }
-                else -> error("not a user message")
+                InnerKind.DEAL -> record.deal ?: error("deal")
+                InnerKind.DELIVERY, InnerKind.READ, InnerKind.SETUP_ROUTE -> error("not a user message")
             }
             val inner = InnerRecord(
                 kind = record.kind,

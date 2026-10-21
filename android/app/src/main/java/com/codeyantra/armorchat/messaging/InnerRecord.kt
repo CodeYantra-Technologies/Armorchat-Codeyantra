@@ -1,6 +1,7 @@
 package com.codeyantra.armorchat.messaging
 
 import com.codeyantra.armorchat.core.json.CanonicalJson
+import com.codeyantra.armorchat.deal.domain.DealIds
 import com.codeyantra.armorchat.domain.identity.Base64Url
 
 class MessagingProtocolException(message: String) : SecurityException(message)
@@ -11,6 +12,7 @@ enum class InnerKind {
     READ,
     SETUP_ROUTE,
     ATTACHMENT,
+    DEAL,
     ;
 
     val wire: String
@@ -20,6 +22,7 @@ enum class InnerKind {
             READ -> "read"
             SETUP_ROUTE -> "setup_route"
             ATTACHMENT -> "attachment"
+            DEAL -> "deal"
         }
 
     val isUserMessage: Boolean
@@ -32,6 +35,7 @@ enum class InnerKind {
             "read" -> READ
             "setup_route" -> SETUP_ROUTE
             "attachment" -> ATTACHMENT
+            "deal" -> DEAL
             else -> throw MessagingProtocolException("unknown inner kind")
         }
     }
@@ -69,6 +73,17 @@ sealed class InnerBody {
         val inlineCiphertext: String,
         val replyTo: ReplyMetadata? = null,
     ) : InnerBody()
+
+    data class Deal(
+        val protocol: Long,
+        val envelopeId: String,
+        val chunkIndex: Long,
+        val chunkCount: Long,
+        val frameSha256: String,
+        val chunk: String,
+    ) : InnerBody() {
+        override fun toString(): String = "Deal"
+    }
 }
 
 data class InnerRecord(
@@ -135,6 +150,14 @@ data class InnerRecord(
             "size_bytes" to b.sizeBytes,
             "wrapped_key" to b.wrappedKeyBase64Url,
         ).let { if (b.replyTo != null) it + ("reply_to" to b.replyTo.toMap()) else it }
+        is InnerBody.Deal -> mapOf(
+            "chunk" to b.chunk,
+            "chunk_count" to b.chunkCount,
+            "chunk_index" to b.chunkIndex,
+            "envelope_id" to b.envelopeId,
+            "frame_sha256" to b.frameSha256,
+            "protocol" to b.protocol,
+        )
     }
 
     fun encodeCanonical(): String {
@@ -191,6 +214,14 @@ data class InnerRecord(
             "wrapped_key",
         )
         private val ATTACHMENT_BODY_ALLOWED = ATTACHMENT_BODY_REQUIRED + "reply_to"
+        private val DEAL_BODY_KEYS = setOf(
+            "chunk",
+            "chunk_count",
+            "chunk_index",
+            "envelope_id",
+            "frame_sha256",
+            "protocol",
+        )
         private val MEDIA_CLASSES = setOf("image", "document", "voice")
 
         fun parse(raw: String): InnerRecord {
@@ -212,6 +243,7 @@ data class InnerRecord(
                 InnerKind.DELIVERY, InnerKind.READ -> parseReceiptBody(bodyMap)
                 InnerKind.SETUP_ROUTE -> parseSetupRouteBody(bodyMap)
                 InnerKind.ATTACHMENT -> parseAttachmentBody(bodyMap)
+                InnerKind.DEAL -> parseDealBody(bodyMap)
             }
             val record = InnerRecord(
                 kind = kind,
@@ -307,6 +339,25 @@ data class InnerRecord(
             val decoded = decodeCanonical(value)
             if (decoded.size < min || decoded.size > max) throw MessagingProtocolException("token length")
             return value
+        }
+
+        private fun parseDealBody(map: Map<String, Any?>): InnerBody.Deal {
+            if (map.keys != DEAL_BODY_KEYS) throw MessagingProtocolException("deal body")
+            if (map["protocol"] != 1L) throw MessagingProtocolException("deal protocol")
+            val envelopeId = map["envelope_id"] as? String ?: throw MessagingProtocolException("deal envelope")
+            try {
+                DealIds.require(envelopeId)
+            } catch (_: Exception) {
+                throw MessagingProtocolException("deal envelope")
+            }
+            val index = requireNonNeg(map["chunk_index"])
+            val count = requirePositive(map["chunk_count"])
+            if (count > 16L || index >= count) throw MessagingProtocolException("deal chunk")
+            val hash = requireSha256(map["frame_sha256"])
+            val chunk = map["chunk"] as? String ?: throw MessagingProtocolException("deal chunk")
+            val raw = decodeCanonical(chunk)
+            if (raw.isEmpty() || raw.size > 12_288) throw MessagingProtocolException("deal chunk")
+            return InnerBody.Deal(1L, envelopeId, index, count, hash, chunk)
         }
 
         private fun parseSetupRouteBody(map: Map<String, Any?>): InnerBody.SetupRoute {
