@@ -53,8 +53,8 @@ android {
         applicationId = "com.codeyantra.armorchat"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.5.9-large-blob"
+        versionCode = 2
+        versionName = "0.6.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

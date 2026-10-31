@@ -22,17 +22,16 @@ implementation details.
 
 Transport must remain replaceable through `MessageTransport`.
 
-## What this phase is
+## What stays out
 
-Phases 0–1D.2 cover the application shell, local identity, encrypted backup,
-verified contact exchange, the isolated MLS harness, and the CodeYantra
-Privacy Relay foundation (`android/relay/`). Please do **not** submit:
+ArmorChat 0.6.0 already ships one-to-one MLS chat, the ciphertext relay,
+encrypted attachments, and a direct Emergency Mesh handoff. Please do **not** submit:
 
 - A custom encryption protocol for messaging sessions
-- FCM, WebSocket wake hints, or enabling chat send / `CryptoEngine`
-- Calls, WebRTC, mesh, or onion routing
+- Calls, WebRTC, or onion routing
+- A change that turns Armor Deal on in the production app, or that describes it as a legal e-sign
 - Telemetry or analytics
-- Payment integration
+- Payment integration beyond the existing support link
 - Hard-coded secrets or API keys
 - Debug backdoors
 

@@ -5,22 +5,24 @@ Veltrix is the backend trust/security layer. Veltrix is not a surveillance layer
 
 ## Current status
 
-This repository includes **Phase 1C — Local Contact Exchange**, on the completed
-Phase 1A identity and Phase 1B encrypted backup foundation.
+ArmorChat 0.6.0 is the public statement of this tree. See the repository README.
 
-Implemented in this phase:
+Implemented and in the production path:
 
 - Local Ed25519 identity via Google Tink (`tink-android`)
 - Android Keystore AES-256-GCM KEK wrapping the private keyset
 - ArmorChat ID (`ac1:`) fingerprint + QR public payload with binding checks
 - Encrypted identity blob under `noBackupFilesDir` (`allowBackup=false`)
+- One-to-one MLS messaging (RFC 9420, mls-rs). The relay carries ciphertext.
+- Encrypted photos, files, and voice notes, including chunked large-file transport
+- Emergency Mesh as a direct sealed handoff between nearby phones
 
-The following are **not implemented** and must not be claimed as working:
+The following must not be claimed as working:
 
-- End-to-end encryption of messages
-- Double Ratchet / session (X25519) keys
-- Message relay / transport
-- Calls, attachments, mesh, or private routing
+- Groups or calls
+- Armor Deal in the production app. Production UI stays off. It is not a legal e-sign.
+- Anonymous routing, untraceable delivery, or a finished multi-hop mesh
+- Safety against a compromised, unlocked, or rooted phone
 
 ## Security goals (this and future phases)
 
@@ -74,6 +76,6 @@ We will acknowledge reports and work on a fix before any public disclosure.
 ## Production crypto
 
 Do not invent a custom cryptographic protocol in this codebase.
-Long-term identity uses Google Tink Ed25519. Messaging E2EE will sit behind
-`CryptoEngine` in a later audited phase. Until then, message crypto must not
-be presented as production security.
+Long-term identity uses Google Tink Ed25519. One-to-one messages use MLS
+through mls-rs. Do not describe that as anonymous, untraceable, or proof
+against a compromised phone.

@@ -1,9 +1,10 @@
 # ArmorChat
 
-ArmorChat is a privacy-focused messaging application by CodeYantra Technologies.
+ArmorChat is the Android messenger from CodeYantra Technologies.
 
-This repository is the current fresh implementation of ArmorChat. It is built for
-secure local identity, encrypted backup, and verified contact exchange.
+The product introduction for 0.6.0 is the repository [README](../README.md).
+This directory is the app: identity, MLS messaging, encrypted attachments,
+and the pilot Emergency Mesh path.
 
 **Secured by Veltrix** — Veltrix is the backend trust/security layer.
 It is not a surveillance layer.
@@ -14,27 +15,29 @@ by CodeYantra Technologies
 Secured by Veltrix
 ```
 
-## Current status — Phases 0–1C (foundation, identity, backup, contacts)
+## Current status — 0.6.0
 
-Completed in this tree:
+The product introduction is the repository [README](../README.md). This page is the Android tree.
 
-- **Phase 0** — Application shell, clean architecture boundaries, branding
-- **Phase 1A** — Local Ed25519 identity (Google Tink), Android Keystore KEK–wrapped
-  private key storage, ArmorChat ID (`ac1:`), public QR exchange
-- **Phase 1B** — Encrypted identity backup / restore (password-protected recovery file)
-- **Phase 1C** — Verified QR contact exchange and local contacts persistence
+In this tree:
+
+- Local Ed25519 identity, Android Keystore wrap, ArmorChat ID (`ac1:`), and QR contact exchange
+- Password-protected identity backup
+- One-to-one MLS messaging (RFC 9420, mls-rs) over the CodeYantra ciphertext relay
+- Encrypted photos, files, and voice notes, including chunked transport for large files
+- Emergency Mesh as a direct phone-to-phone handoff when the network is down
+- arm64-v8a pilot packages
+
+Not in the production app, and not claimed here:
+
+- Groups and calls
+- Armor Deal. The production UI stays off. It is not a legal e-sign.
+- Anonymous routing, or a finished multi-hop mesh
 
 See [docs/IDENTITY_SECURITY.md](docs/IDENTITY_SECURITY.md),
 [docs/CONTACT_EXCHANGE.md](docs/CONTACT_EXCHANGE.md), and [SECURITY.md](SECURITY.md).
-
-Still **not** claimed / not implemented:
-
-- End-to-end encrypted messaging
-- Double Ratchet / X25519 session keys
-- Decentralized / relayed messaging
-- Voice or video calls
-- Mesh networking
-- Attachments, voice notes, or groups
+Older design notes in `docs/` record how the tree was built. Where one of them
+still says messaging is unimplemented, the repository README is the current statement.
 
 ## Brand hierarchy
 
@@ -62,8 +65,8 @@ Future transports are expected to implement `MessageTransport`:
 - `PrivateRoutingTransport`
 - `MeshTransport`
 
-`CodeYantraRelayTransport` exists for Phase 1D.2 but is **not** Hilt-bound.
-Production still uses `NoOpMessageTransport`; chat send stays disabled.
+Chat send goes through the MLS session and the CodeYantra relay.
+`NoOpMessageTransport` is not the production path.
 
 ## Stack
 
@@ -77,22 +80,21 @@ Production still uses `NoOpMessageTransport`; chat send stays disabled.
 - Bouncy Castle (scrypt backup KDF / Ed25519 public-key validation helpers)
 - Coroutines / Flow
 - CameraX + ZXing (QR)
-- OkHttp (reserved for future networking)
-- WorkManager (reserved for future background work)
+- OkHttp (relay)
+- WorkManager (background work)
 
 Minimum SDK: 26. Target / compile SDK: 36.
 
 ## Roadmap
 
-| Phase | Scope |
+| Area | In 0.6.0 |
 | --- | --- |
-| **Phase 0** | Foundation (complete in this repository) |
-| **Phase 1** | Identity + contacts (1A–1C complete); E2EE text messaging still ahead |
-| **Phase 2** | Attachments |
-| **Phase 3** | Voice notes |
-| **Phase 4** | Groups |
-| **Phase 5** | Calls |
-| **Phase 6** | Advanced private routing / optional mesh research |
+| Identity, backup, verified QR contacts | Yes |
+| One-to-one MLS messaging and the ciphertext relay | Yes |
+| Photos, files, voice notes | Yes |
+| Emergency Mesh, direct handoff | Yes, as a pilot path |
+| Groups, calls | No |
+| Armor Deal in the production app | No |
 
 ## Building
 
