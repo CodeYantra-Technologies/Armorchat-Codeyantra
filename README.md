@@ -59,6 +59,15 @@ Report a vulnerability privately to CodeYantra Technologies. Do not open a publi
 
 ## License
 
-Apache License 2.0. See [android/LICENSE](android/LICENSE), [android/NOTICE](android/NOTICE), and [android/THIRD_PARTY_NOTICES.md](android/THIRD_PARTY_NOTICES.md).
+ArmorChat uses **AGPLv3 (version 3 only) / separate commercial licensing**.
+See [LICENSE](LICENSE) for the AGPLv3 terms and
+[COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) for the commercial option, scope,
+and treatment of earlier Apache-licensed releases. The
+[commercial agreement](legal/COMMERCIAL_AGREEMENT.md) is prepared for completion
+and signatures; the [license audit](legal/LICENSE_AUDIT.md) records remaining
+release requirements. Commercial use is permitted
+under AGPLv3 when its requirements are met. Third-party components retain their
+own licenses; see [android/NOTICE](android/NOTICE) and
+[android/THIRD_PARTY_NOTICES.md](android/THIRD_PARTY_NOTICES.md).
 
 The license does not grant rights in the ArmorChat, CodeYantra Technologies, or Veltrix names or logos.

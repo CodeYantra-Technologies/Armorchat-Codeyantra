@@ -5,15 +5,21 @@ application (`com.codeyantra.armorchat`). This is **not legal advice**.
 
 Copyright 2026 CodeYantra Technologies.
 
-Project license: [Apache License 2.0](LICENSE). See also [NOTICE](NOTICE).
+Project license: AGPL-3.0-only, with a separate commercial option. See the
+repository LICENSE, COMMERCIAL_LICENSE.md, and android/NOTICE. Third-party
+components retain the licenses listed below. The Apache-2.0 text is retained
+in LICENSES/Apache-2.0.txt for third-party components.
 
 ## Summary
 
 - **No GPL, AGPL, or SSPL** found among **direct** dependencies listed in
   `gradle/libs.versions.toml` / `app/build.gradle.kts`.
-- A full **transitive** license scan is incomplete without an automated license
-  plugin (optional future work). Review transitive artifacts before Play Store /
-  redistribution milestones.
+- A deeper lockfile/cache inventory is recorded in `legal/LICENSE_AUDIT.md`
+  and `legal/license-inventory.json`. It does not replace a release SBOM,
+  source-level rights review, or notices for all redistributed artifacts.
+- Native libraries in the packaging directory include the OpenMLS spike.
+  Its dependency graph includes MPL-2.0 components; commercial licensing does
+  not waive their covered-source and notice requirements. See section D below.
 - **JUnit 4** is **EPL-1.0** (copyleft-ish) but is **test scope only** and is
   **not shipped in the APK**.
 - Optional consistent **SPDX** file headers were deferred; value is limited versus
@@ -24,7 +30,7 @@ Project license: [Apache License 2.0](LICENSE). See also [NOTICE](NOTICE).
 
 ## A. Runtime / bundled dependencies
 
-| Component | Version | Purpose | License | Source | Attribution / notes | Apache-2.0 compatible? |
+| Component | Version | Purpose | License | Source | Attribution / notes | Prior Apache-2.0 compatibility assessment? |
 | --- | --- | --- | --- | --- | --- | --- |
 | Google Tink (`tink-android`) | 1.21.0 | Ed25519 identity crypto | Apache-2.0 | https://github.com/tink-crypto/tink-java | Apache NOTICE via upstream; no extra proprietary terms known | Yes |
 | Bouncy Castle (`bcprov-jdk18on`) | 1.81 | scrypt (backup) + Ed25519 `validatePublicKeyFull` | Bouncy Castle Licence (MIT-like / MIT) | https://www.bouncycastle.org/ | **Copyright notice required** in copies — see [NOTICE](NOTICE) | Yes (permissive) |
@@ -85,13 +91,38 @@ into `implementation` without a separate license review.
 
 ## Compatibility conclusion (engineering)
 
-Apache-2.0 distribution of this **fresh** ArmorChat implementation appears
+The earlier Apache-2.0 distribution of this ArmorChat implementation appeared
 **compatible** with the current **direct** dependency set: Apache-2.0 libraries
 plus Bouncy Castle’s MIT-like licence (NOTICE copyright retained) and
 test-only EPL JUnit.
 
-This repository is **not** a relicensing of any GPL/BChat/Session tree.
+This inventory is not a complete AGPLv3 or commercial-license compatibility
+audit. Review the full dependency graph and rights in external contributions
+before distribution under either option.
 
 Disclaimer: engineering compliance audit only — not legal advice. Before
 international Play Store / export distribution, review encryption
 export-compliance requirements with qualified counsel.
+
+## D. Native and backend inventory update — 25 November 2026
+
+First-party native bridge packages use AGPL-3.0-only with a separately executed
+commercial option. Their dependencies keep their own licenses. The three
+Cargo.lock files contain 470 third-party entries in total (not unique packages).
+The OpenMLS graph includes hpke-rs, hpke-rs-crypto, hpke-rs-rust-crypto, and
+hpke-rs-libcrux 0.7.0 under MPL-2.0. Not every locked package is necessarily
+compiled. OpenMLS binaries are currently in the app packaging directory;
+verify the released APK and supply the required covered-source access and
+notices for included MPL code, or exclude unused libraries deliberately.
+
+The mls-rs and vodozemac locked graphs have no MPL-only entries in the scanned
+metadata. This does not establish license compliance of the compiled binaries.
+
+Relay and Deal backend lockfiles contain 191 dependency installation-path
+entries. License metadata is recorded in legal/license-inventory.json; upstream
+license texts and bundled dependencies still require release-specific review.
+Firebase Messaging and AndroidX Biometric are declared runtime dependencies;
+the older table above is not a complete current transitive inventory.
+
+See https://www.mozilla.org/en-US/MPL/2.0/FAQ/ for MPL obligations and
+legal/LICENSE_AUDIT.md in the source distribution for the complete findings.

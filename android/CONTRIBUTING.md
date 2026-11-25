@@ -50,8 +50,19 @@ Do not add instrumented tests that require a network.
 
 ## License
 
-Contributions are accepted under the **Apache License 2.0**. See `LICENSE`,
-`NOTICE`, and `THIRD_PARTY_NOTICES.md`.
+Contributions are submitted under **AGPL-3.0-only**. See `LICENSE`, `NOTICE`,
+and `THIRD_PARTY_NOTICES.md`, plus [commercial licensing](../COMMERCIAL_LICENSE.md).
+
+Contributors retain copyright. An AGPL contribution alone does not authorize
+CodeYantra Technologies to offer that contribution under proprietary terms.
+Before merging an external contribution intended for the commercially licensed
+code, maintainers must obtain a separate signed contributor agreement that
+explicitly grants the necessary commercial sublicensing rights, and keep a
+record of it. Use the [contributor agreement template](../legal/CONTRIBUTOR_AGREEMENT.md)
+after completing the parties and contribution list. Do not assume opening a pull request grants those rights.
+Contributors must identify third-party material and confirm they are authorized
+to submit their contribution. Earlier contributions require their own rights
+review; this policy does not retroactively grant permission.
 
 ## Pull requests
 

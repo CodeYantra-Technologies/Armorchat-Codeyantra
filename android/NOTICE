@@ -29,7 +29,8 @@ Apache-licensed components (Google Tink, ZXing, CameraX, AndroidX / Jetpack Comp
 Hilt, Room, DataStore, WorkManager, Navigation, Lifecycle, Activity, Core, SplashScreen,
 OkHttp, Kotlin / kotlinx-coroutines, and related build tooling) are used under the
 Apache License, Version 2.0. Their NOTICE/attribution details are summarized in
-THIRD_PARTY_NOTICES.md rather than repeating the full Apache License text here.
+THIRD_PARTY_NOTICES.md. The full Apache License text is retained at
+../LICENSES/Apache-2.0.txt.
 
 AndroidX / AOSP-related notices typically ship with the Android SDK / dependency
 artifacts; this NOTICE points distributors to THIRD_PARTY_NOTICES.md for the project
