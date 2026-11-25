@@ -3,7 +3,8 @@ name = "armorchat-mlsrs"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.82"
-license = "Apache-2.0"
+license = "AGPL-3.0-only"
+# Separate commercial terms: ../../../COMMERCIAL_LICENSE.md
 publish = false
 
 [lib]

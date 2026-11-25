@@ -25,7 +25,7 @@
     <string name="settings_support">Support ArmorChat</string>
     <string name="about_developed">Developed by CodeYantra Technologies</string>
     <string name="settings_open_source_licenses">Open Source Licenses</string>
-    <string name="about_license_blurb">ArmorChat is licensed under the Apache License 2.0. Third-party notices are listed under Open Source Licenses.</string>
+    <string name="about_license_blurb">ArmorChat is available under AGPLv3 (version 3 only), with a separate commercial license option from CodeYantra Technologies. Third-party notices are listed under Open Source Licenses.</string>
     <string name="support_title">Support ArmorChat</string>
     <string name="support_body">Need help or have feedback? We\'d love to hear from you.</string>
     <string name="support_developer_title">Support the Developer</string>

@@ -130,17 +130,20 @@ user messages — including in future phases.
 
 ## License
 
-This repository is licensed under the Apache License 2.0.
+ArmorChat uses **AGPLv3 (version 3 only) / separate commercial licensing**.
+Commercial use is allowed under AGPLv3 when its terms are met.
+See [commercial licensing](../COMMERCIAL_LICENSE.md) for the alternative agreement
+and the rights retained by earlier Apache-licensed copies.
 
 See:
 
-- [LICENSE](LICENSE) — Apache License Version 2.0 (full text)
+- [LICENSE](LICENSE) — GNU Affero General Public License version 3 (full text)
 - [NOTICE](NOTICE) — copyright and required third-party notices
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) — dependency / asset inventory
 
 ### Trademarks
 
-The Apache License 2.0 does **not** grant trademark rights to the ArmorChat,
+The software license does **not** grant trademark rights to the ArmorChat,
 CodeYantra Technologies, or Veltrix names or logos.
 
 ## Contributing
