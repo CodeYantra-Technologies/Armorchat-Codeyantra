@@ -6,6 +6,19 @@
 
 Read with [RELAY_ARCHITECTURE.md](RELAY_ARCHITECTURE.md), [MESSAGING_PROTOCOL.md](MESSAGING_PROTOCOL.md), [THREAT_MODEL.md](THREAT_MODEL.md), [MLS_SHOOTOUT.md](MLS_SHOOTOUT.md).
 
+## Relay runtime and dependency security
+
+Use **Node.js 22 or later**, matching Firebase Admin 14's runtime requirement.
+From `android/relay/`, run `npm ci`, `npm test`, and
+`npm audit --package-lock-only` before deployment.
+
+The relay pins its resolved dependency graph in `package-lock.json`.
+Security overrides keep `google-gax@5` on `rimraf ^6.1.4` (which brings patched
+`glob`/`minimatch`) and the transitive `uuid` dependency on CommonJS-compatible `uuid ^11.1.1`.
+These address outdated transitive ranges without adding runtime dependencies
+that the relay imports directly. Review and remove the overrides when upstream
+parent releases adopt patched dependency ranges.
+
 ## What this phase implements
 
 A standalone HTTPS service in `android/relay/` plus Android types behind `MessageTransport`. FCM is a generic wake hint only (`type=sync_hint`, `v=1`); it is not message transport. WebSocket, attachments, groups, calls, and mesh remain out of scope.
