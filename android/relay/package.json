@@ -10,9 +10,15 @@
     "test": "node --test test/*.test.mjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "dependencies": {
     "firebase-admin": "^14.4.0"
+  },
+  "overrides": {
+    "google-gax@5": {
+      "rimraf": "^6.1.4"
+    },
+    "uuid": "^11.1.1"
   }
 }
